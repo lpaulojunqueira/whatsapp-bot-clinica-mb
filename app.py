@@ -167,7 +167,7 @@ Responda como Ana (máximo 4 linhas):"""
 
         # Chamada ao Claude
         message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-5-sonnet-latest",
             max_tokens=400,
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}]
