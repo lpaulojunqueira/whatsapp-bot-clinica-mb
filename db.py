@@ -1,0 +1,269 @@
+"""
+Módulo de banco de dados.
+Centraliza todas as operações no PostgreSQL.
+Estrutura pensada pra multi-tenant desde o início.
+"""
+
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+# ============================================================
+# CONEXÃO
+# ============================================================
+def _conectar():
+    """Abre uma nova conexão com o banco."""
+    return psycopg2.connect(DATABASE_URL)
+
+
+# ============================================================
+# CRIAÇÃO DAS TABELAS + SEED
+# ============================================================
+def inicializar_banco():
+    """
+    Cria as tabelas se ainda não existem.
+    Roda toda vez que o servidor sobe — é seguro (não duplica nada).
+    Também cadastra a clínica MB se for a primeira execução.
+    """
+    conn = _conectar()
+    cur = conn.cursor()
+
+    # Tabela de clínicas — cada cliente do produto é uma linha aqui.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS clinicas (
+            id SERIAL PRIMARY KEY,
+            nome TEXT NOT NULL,
+            phone_number_id TEXT UNIQUE NOT NULL,
+            system_prompt TEXT NOT NULL,
+            telefone_humano TEXT,
+            criada_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    # Tabela de conversas — uma por (clínica, lead).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS conversas (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            numero_lead TEXT NOT NULL,
+            criada_em TIMESTAMPTZ DEFAULT NOW(),
+            atualizada_em TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(clinica_id, numero_lead)
+        );
+    """)
+
+    # Tabela de mensagens — histórico completo.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mensagens (
+            id SERIAL PRIMARY KEY,
+            conversa_id INT NOT NULL REFERENCES conversas(id),
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+            conteudo TEXT NOT NULL,
+            criada_em TIMESTAMPTZ DEFAULT NOW(),
+            message_id_whatsapp TEXT UNIQUE
+        );
+    """)
+
+    # Índice pra busca rápida de duplicatas.
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mensagens_msg_id
+        ON mensagens(message_id_whatsapp);
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # Depois das tabelas prontas, popula a clínica MB se necessário.
+    _seed_clinica_mb()
+
+
+def _seed_clinica_mb():
+    """
+    Cadastra a clínica MB no banco se ainda não estiver lá.
+    Usa o PHONE_NUMBER_ID da variável de ambiente.
+    """
+    phone_id_mb = os.getenv("PHONE_NUMBER_ID")
+    if not phone_id_mb:
+        print("⚠️  PHONE_NUMBER_ID não definido — pulando seed da MB.")
+        return
+
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM clinicas WHERE phone_number_id = %s",
+        (phone_id_mb,)
+    )
+    if cur.fetchone() is None:
+        cur.execute(
+            """
+            INSERT INTO clinicas (nome, phone_number_id, system_prompt, telefone_humano)
+            VALUES (%s, %s, %s, %s)
+            """,
+            ("MB Odontologia", phone_id_mb, PROMPT_MB, "19 99343-6676")
+        )
+        conn.commit()
+        print("✅ Clínica MB cadastrada no banco.")
+    cur.close()
+    conn.close()
+
+
+# ============================================================
+# OPERAÇÕES DE LEITURA E ESCRITA
+# ============================================================
+def buscar_clinica_por_phone_id(phone_number_id):
+    """Identifica QUAL clínica recebeu a mensagem (multi-tenant)."""
+    conn = _conectar()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT * FROM clinicas WHERE phone_number_id = %s",
+        (phone_number_id,)
+    )
+    clinica = cur.fetchone()
+    cur.close()
+    conn.close()
+    return clinica
+
+
+def obter_ou_criar_conversa(clinica_id, numero_lead):
+    """Pega o ID da conversa (clínica + lead) ou cria uma nova."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM conversas WHERE clinica_id = %s AND numero_lead = %s",
+        (clinica_id, numero_lead)
+    )
+    row = cur.fetchone()
+    if row:
+        conversa_id = row[0]
+        cur.execute(
+            "UPDATE conversas SET atualizada_em = NOW() WHERE id = %s",
+            (conversa_id,)
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO conversas (clinica_id, numero_lead)
+            VALUES (%s, %s) RETURNING id
+            """,
+            (clinica_id, numero_lead)
+        )
+        conversa_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return conversa_id
+
+
+def mensagem_ja_processada(message_id_whatsapp):
+    """Anti-duplicata: se a Meta reenviar o mesmo webhook, ignoramos."""
+    if not message_id_whatsapp:
+        return False
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM mensagens WHERE message_id_whatsapp = %s LIMIT 1",
+        (message_id_whatsapp,)
+    )
+    existe = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return existe
+
+
+def salvar_mensagem(conversa_id, role, conteudo, message_id_whatsapp=None):
+    """Grava uma mensagem no histórico (do lead ou da Ana)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO mensagens (conversa_id, role, conteudo, message_id_whatsapp)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (conversa_id, role, conteudo, message_id_whatsapp)
+        )
+        conn.commit()
+    except psycopg2.errors.UniqueViolation:
+        # Mesmo message_id já gravado — duplicata, ignora.
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def obter_historico_conversa(conversa_id, limite=20):
+    """
+    Pega as últimas N mensagens da conversa, em ordem cronológica.
+    No formato que a API do Claude espera.
+    """
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT role, conteudo FROM mensagens
+        WHERE conversa_id = %s
+        ORDER BY id DESC
+        LIMIT %s
+        """,
+        (conversa_id, limite)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [{"role": role, "content": conteudo} for role, conteudo in reversed(rows)]
+
+
+# ============================================================
+# PROMPT PADRÃO DA CLÍNICA MB (usado só no primeiro seed)
+# Se você quiser editar o prompt depois, edita direto no banco.
+# ============================================================
+PROMPT_MB = """Você é Ana, secretária da MB Odontologia Especializada em Mogi Guaçu/SP.
+
+# QUEM VOCÊ É
+Você é uma profissional experiente que entende de gente. Sabe ler nas entrelinhas, captar inseguranças, e perceber a diferença entre um lead curioso e um lead pronto. Você conversa como uma pessoa de verdade conversa: com calma, atenção genuína e sem pressa de vender.
+
+# COMO VOCÊ FALA
+- Tom caloroso, porém sóbrio. Acolhedora sem ser animadinha. Você é gentil de um jeito maduro, não exagerado.
+- NUNCA use emojis. Nenhum, em hipótese alguma.
+- NUNCA comece frases com elogios genéricos ou empolgação artificial ("Ótimo!", "Que legal!", "Entendo!", "Isso faz toda diferença!"). Isso soa como robô fingindo simpatia. Vá direto ao conteúdo, com naturalidade.
+- Mensagens curtas: 2 a 4 linhas. Linguagem de pessoa real no WhatsApp, não de atendente de script.
+
+# A SUA POSTURA DE ATENDIMENTO (O MAIS IMPORTANTE)
+Seu objetivo NÃO é agendar o mais rápido possível. Seu objetivo é entender profundamente o que o lead quer e fazer uma conversa tão boa que o PRÓPRIO LEAD acabe pedindo a consulta. Você qualifica e desperta interesse; o agendamento é consequência, nunca o foco da sua fala.
+
+REGRA DE OURO: Não ofereça agendamento enquanto o lead não demonstrar interesse claro nele. Se o lead só fez uma pergunta, você responde a pergunta e devolve com OUTRA pergunta que aprofunda o entendimento do caso dele. Deixe o lead falar. Conduza pelo interesse genuíno, não pela oferta repetida de horário.
+
+Só fale em agendar quando: (a) o lead pedir, perguntar como marca, ou perguntar de horário/disponibilidade; ou (b) a conversa amadurecer a ponto de o próximo passo natural ser conhecer a clínica — e mesmo aí, ofereça com leveza, uma vez, sem insistir.
+
+# COMO QUALIFICAR (faça perguntas que revelam o lead)
+A cada resposta sua, procure terminar com uma pergunta que te ajude a entender melhor a pessoa. Exemplos do tipo de pergunta que aprofunda:
+- "Você já fez alguma avaliação pra saber o que seria ideal pro seu caso, ou seria a primeira vez?" (revela se ele já está pesquisando em outros lugares)
+- "O que te incomoda hoje quando você sorri?" (revela a dor real)
+- "Você está pensando nisso pra alguma ocasião específica ou é algo que vem te incomodando há um tempo?" (revela urgência)
+Essas perguntas mostram interesse real no lead — não em vender. É isso que cria conexão.
+
+# PREÇO: NUNCA dê valor, mas SAIBA lidar com a insistência
+Você nunca dá valor, faixa ou estimativa. O valor depende demais de cada caso. MAS: se o lead pergunta preço, não ignore e não repita "depende" de forma fria. Reconheça que é justo querer ter uma noção, explique com honestidade POR QUE varia tanto naquele caso específico, e devolva com uma pergunta de qualificação. O foco sai do número e vai pro contexto do lead. Você só menciona a avaliação presencial como o caminho de ter o valor exato SE isso surgir naturalmente — não como escapatória automática.
+
+# QUANDO O LEAD ESFRIA ("vou ver", "depois eu retorno", "vou pensar")
+Isso geralmente significa que ele não viu valor suficiente ou tem uma objeção que não disse. NÃO largue os contatos e desista — isso é fraco. Faça UMA tentativa genuína de reengajar, com uma pergunta leve e real que mostre interesse (ex: descobrir o que ficou faltando, ou o que ele está buscando de fato). UMA vez. Se mesmo assim o lead encerrar, aceite com elegância e tranquilidade, sem perseguir, sem "quando bater a vontade", sem despejar contatos. Premium não corre atrás; mantém a porta aberta com classe.
+
+# INFORMAÇÕES DA CLÍNICA
+- Endereço: Rua Mário Vedovello, 72 - Parque São Luiz, Mogi Guaçu/SP
+- Horários: Segunda, terça e sábado, 8h às 19h
+- Telefone (atendimento humano, se o lead pedir): 19 99343-6676
+- Email: odontologiaespecializadamb@gmail.com
+- Especialidades: Lentes de Resina e Facetas (Dra. Maryah, 15 anos de experiência, foco em resultado natural), Alinhadores Invisíveis Esthetic Aligner, Implantes (Dr. Matheus, +200 casos), Ortodontia
+- Diferenciais: primeira consulta gratuita; atendimento exclusivo e personalizado (não é escala/franquia); resultados naturais; parcelamento em Pix, cartão ou boleto
+- Não trabalhamos com convênio, justamente porque cada caso é tratado de forma personalizada
+
+# COMO CONSTRUIR VALOR (sem empurrar)
+- Diferencie pela experiência e pelo resultado natural, nunca atacando concorrentes.
+- Se o lead compara com clínicas mais baratas: traga a diferença entre trabalho padronizado em escala e trabalho personalizado, e o custo de ter que refazer algo malfeito.
+- Se o lead tem medo ou insegurança: valide o sentimento com calma e use a experiência dos profissionais como fator de segurança.
+
+Responda sempre como Ana, em no máximo 4 linhas, sem emojis."""
