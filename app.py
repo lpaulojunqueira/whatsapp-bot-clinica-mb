@@ -31,11 +31,13 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "meu_token_secreto_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 WHATSAPP_API_URL = "https://graph.facebook.com/v21.0"
+OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions"
 
 # Ritmo de "digitação" simulada
 TEMPO_POR_CARACTERE = 0.045   # ~45ms por caractere = ritmo natural
@@ -126,6 +128,66 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual):
 
 
 # ============================================================
+# ÁUDIO (download do WhatsApp + transcrição via OpenAI Whisper)
+# ============================================================
+def baixar_audio_whatsapp(media_id):
+    """
+    Baixa o arquivo de áudio do WhatsApp em duas etapas:
+    1) pede a URL temporária do arquivo (autenticada)
+    2) baixa o conteúdo binário dessa URL
+    Retorna os bytes do áudio, ou None em caso de erro.
+    """
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    try:
+        # Etapa 1: pega a URL temporária
+        r1 = requests.get(
+            f"{WHATSAPP_API_URL}/{media_id}",
+            headers=headers, timeout=10
+        )
+        r1.raise_for_status()
+        url_arquivo = r1.json().get("url")
+        if not url_arquivo:
+            print("⚠️  WhatsApp não retornou URL do áudio.")
+            return None
+
+        # Etapa 2: baixa o conteúdo
+        r2 = requests.get(url_arquivo, headers=headers, timeout=30)
+        r2.raise_for_status()
+        return r2.content
+    except Exception as e:
+        print(f"❌ Erro ao baixar áudio: {e}")
+        return None
+
+
+def transcrever_audio(audio_bytes):
+    """
+    Manda o áudio pra OpenAI Whisper e retorna o texto transcrito.
+    Usa language='pt' pra otimizar pra português.
+    """
+    if not audio_bytes:
+        return None
+
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    # WhatsApp manda áudio em OGG/Opus — Whisper aceita direto.
+    files = {"file": ("audio.ogg", audio_bytes, "audio/ogg")}
+    data = {"model": "whisper-1", "language": "pt"}
+
+    try:
+        r = requests.post(
+            OPENAI_TRANSCRIBE_URL,
+            headers=headers, files=files, data=data, timeout=60
+        )
+        if r.status_code != 200:
+            print(f"❌ Whisper retornou {r.status_code}: {r.text}")
+            return None
+        texto = r.json().get("text", "").strip()
+        return texto if texto else None
+    except Exception as e:
+        print(f"❌ Erro ao transcrever áudio: {e}")
+        return None
+
+
+# ============================================================
 # QUEBRA DE RESPOSTA EM PARTES
 # ============================================================
 def quebrar_em_partes(texto):
@@ -180,19 +242,39 @@ def calcular_delay(texto):
 # PROCESSAMENTO EM SEGUNDO PLANO
 # ============================================================
 def processar_mensagem_em_background(
-    clinica, conversa_id, message_id_whatsapp, numero_lead, texto_recebido
+    clinica, conversa_id, message_id_whatsapp, numero_lead,
+    texto_recebido=None, audio_media_id=None
 ):
     """
     Roda em uma thread separada — o webhook já respondeu 200 pra Meta,
     então aqui podemos tomar nosso tempo: digitar, pensar, responder.
+
+    Se vier áudio (audio_media_id), transcreve primeiro e usa o texto resultante.
     """
     try:
-        # 1) Mostra check azul + "digitando..."
+        # 1) Mostra check azul + "digitando..." imediatamente
         marcar_como_lida_e_digitando(
             clinica["phone_number_id"], message_id_whatsapp
         )
 
-        # 2) Salva a mensagem do lead no banco.
+        # 1.5) Se for áudio, baixa e transcreve.
+        if audio_media_id:
+            print(f"🎵 Transcrevendo áudio de {numero_lead}...")
+            audio_bytes = baixar_audio_whatsapp(audio_media_id)
+            texto_recebido = transcrever_audio(audio_bytes)
+
+            if not texto_recebido:
+                # Não conseguiu transcrever — avisa o lead e desiste dessa mensagem.
+                enviar_mensagem_whatsapp(
+                    clinica["phone_number_id"], numero_lead,
+                    "Não consegui entender o áudio direito. "
+                    "Pode tentar de novo ou me escrever?"
+                )
+                return
+
+            print(f"   Transcrição: {texto_recebido}")
+
+        # 2) Salva a mensagem do lead no banco (texto, mesmo se veio de áudio).
         salvar_mensagem(
             conversa_id, "user", texto_recebido,
             message_id_whatsapp=message_id_whatsapp
@@ -299,30 +381,50 @@ def receive_message():
                             clinica["id"], sender
                         )
 
-                        # Dispara processamento em segundo plano.
+                        # Dispara processamento em segundo plano (texto).
                         threading.Thread(
                             target=processar_mensagem_em_background,
-                            args=(
-                                dict(clinica), conversa_id, message_id,
-                                sender, texto
-                            ),
+                            kwargs={
+                                "clinica": dict(clinica),
+                                "conversa_id": conversa_id,
+                                "message_id_whatsapp": message_id,
+                                "numero_lead": sender,
+                                "texto_recebido": texto,
+                            },
                             daemon=True
                         ).start()
 
                     elif msg_type == "audio":
-                        # Sprint 2 vai tratar isso de verdade.
-                        print(f"🎵 [{clinica['nome']}] áudio de {sender} (ainda não tratado)")
-                        enviar_mensagem_whatsapp(
-                            phone_number_id, sender,
-                            "Por enquanto consigo ler apenas mensagens de texto. "
-                            "Pode me escrever?"
+                        audio_info = message.get("audio", {})
+                        media_id = audio_info.get("id")
+                        if not media_id:
+                            print(f"⚠️  Áudio sem media_id, ignorando.")
+                            continue
+
+                        print(f"\n🎵 [{clinica['nome']}] áudio de {sender} (media_id={media_id})")
+
+                        conversa_id = obter_ou_criar_conversa(
+                            clinica["id"], sender
                         )
+
+                        # Dispara processamento em segundo plano (áudio → transcrição → resposta).
+                        threading.Thread(
+                            target=processar_mensagem_em_background,
+                            kwargs={
+                                "clinica": dict(clinica),
+                                "conversa_id": conversa_id,
+                                "message_id_whatsapp": message_id,
+                                "numero_lead": sender,
+                                "audio_media_id": media_id,
+                            },
+                            daemon=True
+                        ).start()
 
                     else:
                         print(f"ℹ️  Tipo '{msg_type}' não tratado.")
                         enviar_mensagem_whatsapp(
                             phone_number_id, sender,
-                            "Por enquanto consigo ler apenas mensagens de texto. "
+                            "Por enquanto consigo ler apenas mensagens de texto e áudio. "
                             "Pode me escrever?"
                         )
 
