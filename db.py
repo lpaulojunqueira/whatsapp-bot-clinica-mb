@@ -5,8 +5,8 @@ Estrutura pensada pra multi-tenant desde o início.
 """
 
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -16,7 +16,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # ============================================================
 def _conectar():
     """Abre uma nova conexão com o banco."""
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL)
 
 
 # ============================================================
@@ -117,7 +117,7 @@ def _seed_clinica_mb():
 def buscar_clinica_por_phone_id(phone_number_id):
     """Identifica QUAL clínica recebeu a mensagem (multi-tenant)."""
     conn = _conectar()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute(
         "SELECT * FROM clinicas WHERE phone_number_id = %s",
         (phone_number_id,)
@@ -187,7 +187,7 @@ def salvar_mensagem(conversa_id, role, conteudo, message_id_whatsapp=None):
             (conversa_id, role, conteudo, message_id_whatsapp)
         )
         conn.commit()
-    except psycopg2.errors.UniqueViolation:
+    except psycopg.errors.UniqueViolation:
         # Mesmo message_id já gravado — duplicata, ignora.
         conn.rollback()
     finally:
