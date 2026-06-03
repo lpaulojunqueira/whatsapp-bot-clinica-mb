@@ -21,9 +21,15 @@ from db import (
     mensagem_ja_processada,
     salvar_mensagem,
     obter_historico_conversa,
+    conversa_esta_pausada,
 )
+from painel import registrar_rotas as registrar_rotas_painel
 
 app = Flask(__name__)
+
+# Chave de assinatura dos cookies de sessão (login do painel).
+# Se SECRET_KEY não estiver definida, usa um valor padrão (NÃO seguro pra produção).
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "troque-essa-chave-em-producao")
 
 # ============================================================
 # CONFIGURAÇÕES
@@ -280,6 +286,12 @@ def processar_mensagem_em_background(
             message_id_whatsapp=message_id_whatsapp
         )
 
+        # 2.5) Se um humano assumiu a conversa, a Ana NÃO responde.
+        # A mensagem fica salva pra ele ler no painel.
+        if conversa_esta_pausada(conversa_id):
+            print(f"⏸️  Conversa {conversa_id} pausada (humano assumiu) — Ana em silêncio.")
+            return
+
         # 3) Carrega o histórico recente da conversa.
         historico = obter_historico_conversa(conversa_id, limite=20)
         # A última mensagem do histórico É a que acabou de chegar.
@@ -446,13 +458,17 @@ def home():
 
 
 # ============================================================
-# INICIALIZAÇÃO DO BANCO
+# INICIALIZAÇÃO DO BANCO + REGISTRO DO PAINEL
 # ============================================================
 try:
     inicializar_banco()
     print("✅ Banco de dados pronto.")
 except Exception as e:
     print(f"⚠️  Erro ao inicializar banco: {e}")
+
+# Anexa todas as rotas do painel web ao app principal.
+registrar_rotas_painel(app)
+print("✅ Painel web registrado em /painel")
 
 
 if __name__ == "__main__":
