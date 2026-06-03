@@ -51,8 +51,15 @@ def inicializar_banco():
             numero_lead TEXT NOT NULL,
             criada_em TIMESTAMPTZ DEFAULT NOW(),
             atualizada_em TIMESTAMPTZ DEFAULT NOW(),
+            pausada BOOLEAN DEFAULT FALSE,
             UNIQUE(clinica_id, numero_lead)
         );
+    """)
+
+    # Caso a tabela já exista de antes, garante a coluna nova.
+    cur.execute("""
+        ALTER TABLE conversas
+        ADD COLUMN IF NOT EXISTS pausada BOOLEAN DEFAULT FALSE;
     """)
 
     # Tabela de mensagens — histórico completo.
@@ -64,6 +71,20 @@ def inicializar_banco():
             conteudo TEXT NOT NULL,
             criada_em TIMESTAMPTZ DEFAULT NOW(),
             message_id_whatsapp TEXT UNIQUE
+        );
+    """)
+
+    # Tabela de usuários do painel (login).
+    # clinica_id NULL = admin (vê todas as clínicas).
+    # clinica_id preenchido = usuário daquela clínica (vê só dela).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id SERIAL PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            senha_hash TEXT NOT NULL,
+            nome TEXT,
+            clinica_id INT REFERENCES clinicas(id),
+            criado_em TIMESTAMPTZ DEFAULT NOW()
         );
     """)
 
@@ -79,6 +100,8 @@ def inicializar_banco():
 
     # Depois das tabelas prontas, popula a clínica MB se necessário.
     _seed_clinica_mb()
+    # E o usuário admin (Luiz) se necessário.
+    _seed_usuario_admin()
 
 
 def _seed_clinica_mb():
@@ -107,6 +130,36 @@ def _seed_clinica_mb():
         )
         conn.commit()
         print("✅ Clínica MB cadastrada no banco.")
+    cur.close()
+    conn.close()
+
+
+def _seed_usuario_admin():
+    """
+    Cria o usuário admin se ainda não existe.
+    Usa ADMIN_EMAIL e ADMIN_PASSWORD das variáveis de ambiente.
+    Admin = clinica_id NULL = vê todas as clínicas.
+    """
+    from werkzeug.security import generate_password_hash
+    email = os.getenv("ADMIN_EMAIL")
+    senha = os.getenv("ADMIN_PASSWORD")
+    if not email or not senha:
+        print("⚠️  ADMIN_EMAIL/ADMIN_PASSWORD não definidos — pulando seed do admin.")
+        return
+
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM usuarios WHERE email = %s", (email.lower(),))
+    if cur.fetchone() is None:
+        cur.execute(
+            """
+            INSERT INTO usuarios (email, senha_hash, nome, clinica_id)
+            VALUES (%s, %s, %s, NULL)
+            """,
+            (email.lower(), generate_password_hash(senha), "Admin")
+        )
+        conn.commit()
+        print(f"✅ Usuário admin '{email}' cadastrado.")
     cur.close()
     conn.close()
 
@@ -215,6 +268,161 @@ def obter_historico_conversa(conversa_id, limite=20):
     cur.close()
     conn.close()
     return [{"role": role, "content": conteudo} for role, conteudo in reversed(rows)]
+
+
+# ============================================================
+# FUNÇÕES DO PAINEL
+# ============================================================
+def buscar_usuario_por_email(email):
+    """Retorna o usuário (dict) ou None."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM usuarios WHERE email = %s", (email.lower(),))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    return user
+
+
+def conversa_esta_pausada(conversa_id):
+    """True se o humano assumiu — Ana não deve responder."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute("SELECT pausada FROM conversas WHERE id = %s", (conversa_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return bool(row and row[0])
+
+
+def marcar_pausa_conversa(conversa_id, pausada):
+    """Pausa (True) ou retoma (False) a Ana naquela conversa."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE conversas SET pausada = %s WHERE id = %s",
+        (pausada, conversa_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def listar_conversas(clinica_id=None, limite=100):
+    """
+    Lista conversas pro painel.
+    Se clinica_id é None, retorna de TODAS as clínicas (visão admin).
+    Cada item já vem com a última mensagem trocada.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    if clinica_id is None:
+        cur.execute(
+            """
+            SELECT c.id, c.numero_lead, c.atualizada_em, c.pausada,
+                   cl.nome AS clinica_nome,
+                   (SELECT conteudo FROM mensagens
+                      WHERE conversa_id = c.id
+                      ORDER BY id DESC LIMIT 1) AS ultima_mensagem,
+                   (SELECT role FROM mensagens
+                      WHERE conversa_id = c.id
+                      ORDER BY id DESC LIMIT 1) AS ultima_role
+            FROM conversas c
+            JOIN clinicas cl ON cl.id = c.clinica_id
+            ORDER BY c.atualizada_em DESC
+            LIMIT %s
+            """,
+            (limite,)
+        )
+    else:
+        cur.execute(
+            """
+            SELECT c.id, c.numero_lead, c.atualizada_em, c.pausada,
+                   cl.nome AS clinica_nome,
+                   (SELECT conteudo FROM mensagens
+                      WHERE conversa_id = c.id
+                      ORDER BY id DESC LIMIT 1) AS ultima_mensagem,
+                   (SELECT role FROM mensagens
+                      WHERE conversa_id = c.id
+                      ORDER BY id DESC LIMIT 1) AS ultima_role
+            FROM conversas c
+            JOIN clinicas cl ON cl.id = c.clinica_id
+            WHERE c.clinica_id = %s
+            ORDER BY c.atualizada_em DESC
+            LIMIT %s
+            """,
+            (clinica_id, limite)
+        )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def buscar_conversa_completa(conversa_id):
+    """Retorna info da conversa + todas as mensagens, em ordem."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT c.id, c.numero_lead, c.pausada, c.clinica_id,
+               cl.nome AS clinica_nome, cl.phone_number_id
+        FROM conversas c
+        JOIN clinicas cl ON cl.id = c.clinica_id
+        WHERE c.id = %s
+        """,
+        (conversa_id,)
+    )
+    info = cur.fetchone()
+    if not info:
+        cur.close()
+        conn.close()
+        return None
+
+    cur.execute(
+        """
+        SELECT id, role, conteudo, criada_em
+        FROM mensagens
+        WHERE conversa_id = %s
+        ORDER BY id ASC
+        """,
+        (conversa_id,)
+    )
+    msgs = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return {"info": info, "mensagens": msgs}
+
+
+def criar_usuario_clinica(email, senha, nome, clinica_id):
+    """Cria um usuário vinculado a uma clínica específica."""
+    from werkzeug.security import generate_password_hash
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO usuarios (email, senha_hash, nome, clinica_id)
+        VALUES (%s, %s, %s, %s) RETURNING id
+        """,
+        (email.lower(), generate_password_hash(senha), nome, clinica_id)
+    )
+    user_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return user_id
+
+
+def listar_clinicas():
+    """Lista todas as clínicas — pra o admin escolher quando cria usuário."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT id, nome FROM clinicas ORDER BY nome")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
 
 # ============================================================
