@@ -615,6 +615,7 @@ async function carregarConversas() {
 }
 
 async function abrirConversa(id) {
+  const ehMesmaConversa = (id === conversaSelecionada);
   conversaSelecionada = id;
   const r = await fetch('/painel/api/conversas/' + id);
   if (!r.ok) return;
@@ -644,12 +645,22 @@ async function abrirConversa(id) {
   }
 
   const ms = document.getElementById('mensagens');
+
+  // Decide se devemos forçar o scroll pro fim.
+  // Regra: força se for conversa nova OU se o usuário já estava perto do fim.
+  // Se ele tá lendo histórico (rolou pra cima), respeita a posição dele.
+  const estavaNoFim = !ehMesmaConversa ||
+    (ms.scrollHeight - ms.scrollTop - ms.clientHeight < 80);
+
   ms.innerHTML = data.mensagens.map(m => `
     <div class="msg ${m.role === 'user' ? 'msg-lead' : 'msg-ana'}">
       ${escapar(m.conteudo)}
     </div>
   `).join('');
-  ms.scrollTop = ms.scrollHeight;
+
+  if (estavaNoFim) {
+    ms.scrollTop = ms.scrollHeight;
+  }
 
   carregarConversas();
 }
