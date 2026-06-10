@@ -1,7 +1,7 @@
 """
-Painel web do produto Ana.
+Painel web do produto Converte.ai.
 
-- Tela de login (por email/senha).
+- Tela de login estilizada com a marca.
 - Inbox de conversas (atualiza sozinha a cada 5s).
 - Visualização da conversa selecionada.
 - Botão "Assumir" pausa a Ana e permite enviar mensagens manualmente.
@@ -33,7 +33,6 @@ from db import (
 # AUTENTICAÇÃO
 # ============================================================
 def login_required(f):
-    """Decorador: bloqueia rota se o usuário não estiver logado."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
@@ -45,7 +44,6 @@ def login_required(f):
 
 
 def admin_required(f):
-    """Decorador: bloqueia rota se não for admin (clinica_id NULL)."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         if session.get("clinica_id") is not None:
@@ -55,7 +53,7 @@ def admin_required(f):
 
 
 # ============================================================
-# HTML — usa render_template_string pra ficar tudo num arquivo
+# TELA DE LOGIN
 # ============================================================
 LOGIN_HTML = """
 <!doctype html>
@@ -63,162 +61,525 @@ LOGIN_HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Entrar — Painel Ana</title>
+<title>Entrar — Converte.ai</title>
+<link rel="icon" type="image/png" sizes="64x64" href="/static/favicon-64.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-         background: #f3f4f6; margin: 0; min-height: 100vh;
-         display: flex; align-items: center; justify-content: center; }
-  .card { background: #fff; padding: 36px; border-radius: 12px;
-          box-shadow: 0 4px 24px rgba(0,0,0,.06); width: 360px; }
-  h1 { font-size: 22px; margin: 0 0 6px; color: #111827; }
-  .sub { color: #6b7280; font-size: 14px; margin-bottom: 24px; }
-  label { display: block; font-size: 13px; color: #374151; margin-bottom: 6px; }
-  input { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db;
-          border-radius: 8px; font-size: 15px; margin-bottom: 16px; }
-  input:focus { outline: none; border-color: #2563eb; }
-  button { width: 100%; padding: 11px; background: #111827; color: #fff;
-           border: none; border-radius: 8px; font-size: 15px; cursor: pointer; }
-  button:hover { background: #1f2937; }
-  .erro { background: #fee2e2; color: #991b1b; padding: 10px 12px;
-          border-radius: 8px; font-size: 14px; margin-bottom: 16px; }
+  :root {
+    --verde: #1FBE82;
+    --verde-escuro: #16A370;
+    --verde-claro: #E6F7EF;
+    --carvao: #2D2E3C;
+    --cinza-texto: #6B7280;
+    --cinza-borda: #E5E7EB;
+    --cinza-bg: #F9FAFB;
+    --laranja: #F59E0B;
+    --laranja-bg: #FEF3C7;
+    --vermelho: #EF4444;
+    --vermelho-bg: #FEE2E2;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--cinza-bg);
+    color: var(--carvao);
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    padding: 40px;
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(45, 46, 60, 0.08);
+    width: 100%;
+    max-width: 400px;
+  }
+  .logo-wrap {
+    display: flex; justify-content: center; margin-bottom: 28px;
+  }
+  .logo-wrap img { height: 36px; }
+  h1 {
+    font-size: 20px; font-weight: 600; text-align: center;
+    margin-bottom: 4px; color: var(--carvao);
+  }
+  .sub {
+    color: var(--cinza-texto); font-size: 14px;
+    text-align: center; margin-bottom: 28px;
+  }
+  label {
+    display: block; font-size: 13px; font-weight: 500;
+    color: var(--carvao); margin-bottom: 8px;
+  }
+  input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1.5px solid var(--cinza-borda);
+    border-radius: 10px;
+    font-size: 15px;
+    font-family: inherit;
+    color: var(--carvao);
+    margin-bottom: 18px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus {
+    outline: none;
+    border-color: var(--verde);
+    box-shadow: 0 0 0 4px var(--verde-claro);
+  }
+  button {
+    width: 100%;
+    padding: 13px;
+    background: var(--carvao);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s;
+    margin-top: 6px;
+  }
+  button:hover { background: #1f2030; }
+  .erro {
+    background: var(--vermelho-bg);
+    color: #991B1B;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    margin-bottom: 18px;
+  }
+  .footer {
+    text-align: center;
+    margin-top: 24px;
+    font-size: 12px;
+    color: var(--cinza-texto);
+  }
 </style>
 </head>
 <body>
   <form class="card" method="post" action="/painel/login">
-    <h1>Painel Ana</h1>
-    <div class="sub">Entre pra acompanhar as conversas</div>
+    <div class="logo-wrap">
+      <img src="/static/logo-converte.png" alt="Converte.ai">
+    </div>
+    <h1>Bem-vindo de volta</h1>
+    <div class="sub">Entre pra acompanhar suas conversas</div>
     {% if erro %}<div class="erro">{{ erro }}</div>{% endif %}
     <label>Email</label>
-    <input type="email" name="email" required autofocus>
+    <input type="email" name="email" required autofocus placeholder="seu@email.com">
     <label>Senha</label>
-    <input type="password" name="senha" required>
+    <input type="password" name="senha" required placeholder="••••••••">
     <button type="submit">Entrar</button>
+    <div class="footer">Plataforma de atendimento por IA</div>
   </form>
 </body>
 </html>
 """
 
 
+# ============================================================
+# PAINEL PRINCIPAL
+# ============================================================
 PAINEL_HTML = """
 <!doctype html>
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Painel Ana</title>
+<title>Converte.ai — Atendimento</title>
+<link rel="icon" type="image/png" sizes="64x64" href="/static/favicon-64.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; }
-  body, html { margin: 0; height: 100%;
-    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-    background: #f9fafb; color: #111827; }
-  .app { display: flex; height: 100vh; }
+  :root {
+    --verde: #1FBE82;
+    --verde-escuro: #16A370;
+    --verde-claro: #E6F7EF;
+    --verde-bolha: #DCFCE7;
+    --carvao: #2D2E3C;
+    --carvao-suave: #4B5563;
+    --cinza-texto: #6B7280;
+    --cinza-fraco: #9CA3AF;
+    --cinza-borda: #E5E7EB;
+    --cinza-divisor: #F3F4F6;
+    --cinza-bg: #F9FAFB;
+    --laranja: #D97706;
+    --laranja-bg: #FEF3C7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--cinza-bg);
+    color: var(--carvao);
+    overflow: hidden;
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
 
-  /* Sidebar */
-  .sidebar { width: 360px; background: #fff; border-right: 1px solid #e5e7eb;
-             display: flex; flex-direction: column; }
-  .topbar { padding: 14px 18px; border-bottom: 1px solid #e5e7eb;
-            display: flex; justify-content: space-between; align-items: center; }
-  .topbar .nome { font-size: 14px; font-weight: 600; }
-  .topbar .sair { font-size: 12px; color: #6b7280; text-decoration: none; }
-  .topbar .sair:hover { color: #111827; }
-  .lista { flex: 1; overflow-y: auto; }
-  .conversa-item { padding: 14px 18px; border-bottom: 1px solid #f3f4f6;
-                   cursor: pointer; }
-  .conversa-item:hover { background: #f9fafb; }
-  .conversa-item.ativa { background: #eff6ff; }
-  .conversa-item .top { display: flex; justify-content: space-between;
-                        margin-bottom: 4px; }
-  .conversa-item .lead { font-weight: 600; font-size: 14px; color: #111827; }
-  .conversa-item .clinica { font-size: 11px; color: #2563eb;
-                            text-transform: uppercase; letter-spacing: 0.4px; }
-  .conversa-item .preview { font-size: 13px; color: #6b7280;
-                            white-space: nowrap; overflow: hidden;
-                            text-overflow: ellipsis; }
-  .conversa-item .badge { display: inline-block; font-size: 10px;
-                          padding: 2px 6px; border-radius: 10px;
-                          background: #fef3c7; color: #92400e;
-                          margin-left: 6px; font-weight: 600; }
-  .vazio { padding: 24px; color: #9ca3af; text-align: center; font-size: 14px; }
+  /* ========== HEADER (top da tela inteira) ========== */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px;
+    background: #fff;
+    border-bottom: 1px solid var(--cinza-borda);
+    height: 64px; flex-shrink: 0;
+  }
+  .header-logo img { height: 28px; display: block; }
+  .header-user {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .user-info {
+    text-align: right; line-height: 1.2;
+  }
+  .user-info .nome {
+    font-size: 13px; font-weight: 600; color: var(--carvao);
+  }
+  .user-info .role {
+    font-size: 11px; color: var(--cinza-texto); margin-top: 2px;
+  }
+  .user-avatar {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--carvao); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 14px;
+  }
+  .header-user .sair {
+    color: var(--cinza-texto);
+    text-decoration: none;
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: background .15s, color .15s;
+  }
+  .header-user .sair:hover {
+    background: var(--cinza-divisor);
+    color: var(--carvao);
+  }
 
-  /* Detalhe */
-  .detalhe { flex: 1; display: flex; flex-direction: column; }
-  .detalhe-topo { padding: 16px 24px; border-bottom: 1px solid #e5e7eb;
-                  background: #fff; display: flex; justify-content: space-between;
-                  align-items: center; }
-  .detalhe-topo .titulo { font-weight: 600; }
-  .detalhe-topo .sub { font-size: 13px; color: #6b7280; }
-  .btn { padding: 8px 14px; border-radius: 8px; border: none;
-         font-size: 13px; cursor: pointer; font-weight: 500; }
-  .btn-primario { background: #111827; color: #fff; }
-  .btn-primario:hover { background: #1f2937; }
-  .btn-verde { background: #059669; color: #fff; }
-  .btn-verde:hover { background: #047857; }
+  /* ========== LAYOUT PRINCIPAL ========== */
+  .main { display: flex; flex: 1; overflow: hidden; }
 
-  .mensagens { flex: 1; overflow-y: auto; padding: 24px;
-               display: flex; flex-direction: column; gap: 8px; }
-  .msg { max-width: 70%; padding: 10px 14px; border-radius: 14px;
-         font-size: 14px; line-height: 1.45; word-wrap: break-word; }
-  .msg-lead { background: #fff; border: 1px solid #e5e7eb;
-              align-self: flex-start; border-bottom-left-radius: 4px; }
-  .msg-ana { background: #dcfce7; align-self: flex-end;
-             border-bottom-right-radius: 4px; }
-  .msg .hora { font-size: 10px; color: #9ca3af; margin-top: 4px; }
+  /* ========== SIDEBAR ========== */
+  .sidebar {
+    width: 380px; flex-shrink: 0;
+    background: #fff;
+    border-right: 1px solid var(--cinza-borda);
+    display: flex; flex-direction: column;
+  }
+  .sidebar-top {
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--cinza-divisor);
+  }
+  .sidebar-top .label {
+    font-size: 11px; font-weight: 600;
+    color: var(--cinza-fraco);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 4px;
+  }
+  .sidebar-top .clinica-nome {
+    font-size: 16px; font-weight: 600; color: var(--carvao);
+  }
+  .lista {
+    flex: 1; overflow-y: auto;
+  }
+  .conversa-item {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--cinza-divisor);
+    cursor: pointer;
+    display: flex; gap: 12px;
+    transition: background .12s;
+    border-left: 3px solid transparent;
+  }
+  .conversa-item:hover { background: var(--cinza-bg); }
+  .conversa-item.ativa {
+    background: var(--verde-claro);
+    border-left-color: var(--verde);
+  }
+  .avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 600; font-size: 15px;
+  }
+  .ci-corpo { flex: 1; min-width: 0; }
+  .ci-topo {
+    display: flex; justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 3px;
+    gap: 8px;
+  }
+  .ci-lead {
+    font-size: 14px; font-weight: 600; color: var(--carvao);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ci-clinica {
+    font-size: 10px; color: var(--verde-escuro);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    font-weight: 600; flex-shrink: 0;
+  }
+  .ci-preview {
+    font-size: 13px; color: var(--cinza-texto);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ci-badge {
+    display: inline-block;
+    background: var(--laranja-bg);
+    color: var(--laranja);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    margin-left: 6px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .vazio {
+    padding: 40px 20px; color: var(--cinza-fraco);
+    text-align: center; font-size: 14px;
+  }
 
-  .composer { padding: 14px 24px; border-top: 1px solid #e5e7eb;
-              background: #fff; display: flex; gap: 10px; }
-  .composer textarea { flex: 1; resize: none; padding: 10px 12px;
-                       border: 1px solid #d1d5db; border-radius: 8px;
-                       font-family: inherit; font-size: 14px; height: 44px;
-                       max-height: 120px; }
-  .composer textarea:focus { outline: none; border-color: #2563eb; }
-  .composer.desativado { display: none; }
-  .aviso { padding: 12px 24px; background: #fef3c7; color: #92400e;
-           font-size: 13px; text-align: center; border-top: 1px solid #fde68a; }
+  /* ========== DETALHE ========== */
+  .detalhe {
+    flex: 1;
+    display: flex; flex-direction: column;
+    background: var(--cinza-bg);
+    min-width: 0;
+  }
+  .detalhe-topo {
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--cinza-borda);
+    background: #fff;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-shrink: 0;
+  }
+  .det-info { display: flex; align-items: center; gap: 12px; }
+  .det-info .titulo {
+    font-weight: 600; font-size: 15px; color: var(--carvao);
+  }
+  .det-info .sub {
+    font-size: 12px; color: var(--cinza-texto); margin-top: 2px;
+  }
+  .btn {
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-primario {
+    background: var(--carvao); color: #fff;
+  }
+  .btn-primario:hover { background: #1f2030; }
+  .btn-verde {
+    background: var(--verde); color: #fff;
+  }
+  .btn-verde:hover { background: var(--verde-escuro); }
 
-  .placeholder { flex: 1; display: flex; align-items: center;
-                 justify-content: center; color: #9ca3af; font-size: 15px; }
+  .mensagens {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .msg {
+    max-width: 65%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+  }
+  .msg-lead {
+    background: #fff;
+    border: 1px solid var(--cinza-borda);
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+    color: var(--carvao);
+  }
+  .msg-ana {
+    background: var(--verde-bolha);
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+    color: var(--carvao);
+  }
+
+  .aviso {
+    padding: 12px 24px;
+    background: var(--laranja-bg);
+    color: var(--laranja);
+    font-size: 13px; font-weight: 500;
+    text-align: center;
+    border-top: 1px solid #FDE68A;
+    flex-shrink: 0;
+  }
+
+  .composer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--cinza-borda);
+    background: #fff;
+    display: flex; gap: 10px; align-items: flex-end;
+    flex-shrink: 0;
+  }
+  .composer textarea {
+    flex: 1; resize: none;
+    padding: 11px 14px;
+    border: 1.5px solid var(--cinza-borda);
+    border-radius: 10px;
+    font-family: inherit; font-size: 14px;
+    height: 44px; max-height: 120px;
+    color: var(--carvao);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer textarea:focus {
+    outline: none;
+    border-color: var(--verde);
+    box-shadow: 0 0 0 3px var(--verde-claro);
+  }
+
+  /* ========== ESTADO VAZIO ========== */
+  .placeholder {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--cinza-fraco);
+    text-align: center;
+    padding: 40px;
+  }
+  .placeholder-icone {
+    width: 80px; height: 80px;
+    background: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(45, 46, 60, 0.05);
+  }
+  .placeholder-icone svg {
+    width: 36px; height: 36px;
+    stroke: var(--verde);
+  }
+  .placeholder-titulo {
+    font-size: 16px; font-weight: 600;
+    color: var(--carvao); margin-bottom: 6px;
+  }
+  .placeholder-sub {
+    font-size: 14px; color: var(--cinza-texto);
+  }
 </style>
 </head>
 <body>
 <div class="app">
-  <aside class="sidebar">
-    <div class="topbar">
-      <div class="nome">{{ nome }}</div>
+
+  <header class="header">
+    <div class="header-logo">
+      <img src="/static/logo-converte.png" alt="Converte.ai">
+    </div>
+    <div class="header-user">
+      <div class="user-info">
+        <div class="nome">{{ nome }}</div>
+        <div class="role">{{ "Admin" if eh_admin else "Cliente" }}</div>
+      </div>
+      <div class="user-avatar">{{ inicial }}</div>
       <a href="/painel/logout" class="sair">Sair</a>
     </div>
-    <div class="lista" id="lista">
-      <div class="vazio">Carregando...</div>
-    </div>
-  </aside>
+  </header>
 
-  <main class="detalhe">
-    <div class="placeholder" id="placeholder">
-      Selecione uma conversa pra começar
-    </div>
-
-    <div class="detalhe-topo" id="detalhe-topo" style="display:none">
-      <div>
-        <div class="titulo" id="det-titulo">—</div>
-        <div class="sub" id="det-sub">—</div>
+  <div class="main">
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <div class="label">Atendimento de</div>
+        <div class="clinica-nome">{{ contexto }}</div>
       </div>
-      <button class="btn" id="btn-acao" onclick="alternarPausa()">—</button>
-    </div>
-    <div class="mensagens" id="mensagens" style="display:none"></div>
-    <div class="aviso" id="aviso-pausada" style="display:none">
-      Você assumiu essa conversa. A Ana não vai responder até você devolver o controle.
-    </div>
-    <form class="composer" id="composer" style="display:none"
-          onsubmit="enviarMsg(event)">
-      <textarea id="msg-texto" placeholder="Digite a mensagem..." required></textarea>
-      <button class="btn btn-primario" type="submit">Enviar</button>
-    </form>
-  </main>
+      <div class="lista" id="lista">
+        <div class="vazio">Carregando...</div>
+      </div>
+    </aside>
+
+    <main class="detalhe">
+      <div class="placeholder" id="placeholder">
+        <div class="placeholder-icone">
+          <svg fill="none" stroke="currentColor" stroke-width="2"
+               viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 0 1-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+          </svg>
+        </div>
+        <div class="placeholder-titulo">Selecione uma conversa</div>
+        <div class="placeholder-sub">As mensagens aparecem aqui em tempo real</div>
+      </div>
+
+      <div class="detalhe-topo" id="detalhe-topo" style="display:none">
+        <div class="det-info">
+          <div class="avatar" id="det-avatar" style="background:#1FBE82">—</div>
+          <div>
+            <div class="titulo" id="det-titulo">—</div>
+            <div class="sub" id="det-sub">—</div>
+          </div>
+        </div>
+        <button class="btn" id="btn-acao" onclick="alternarPausa()">—</button>
+      </div>
+      <div class="mensagens" id="mensagens" style="display:none"></div>
+      <div class="aviso" id="aviso-pausada" style="display:none">
+        Você assumiu essa conversa. A Ana não vai responder até você devolver o controle.
+      </div>
+      <form class="composer" id="composer" style="display:none"
+            onsubmit="enviarMsg(event)">
+        <textarea id="msg-texto" placeholder="Digite sua mensagem..." required></textarea>
+        <button class="btn btn-primario" type="submit">Enviar</button>
+      </form>
+    </main>
+  </div>
 </div>
 
 <script>
 let conversaSelecionada = null;
 let conversas = [];
+
+// Gera cor estável a partir do número (cada lead tem sua cor).
+function corDoLead(numero) {
+  const cores = [
+    '#1FBE82', '#3B82F6', '#8B5CF6', '#EC4899',
+    '#F59E0B', '#10B981', '#6366F1', '#14B8A6',
+    '#F97316', '#06B6D4'
+  ];
+  let hash = 0;
+  for (let i = 0; i < numero.length; i++) {
+    hash = numero.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return cores[Math.abs(hash) % cores.length];
+}
+
+function inicialDe(numero) {
+  // Pega os 2 últimos dígitos pra usar como "inicial visual"
+  const s = (numero || '').replace(/\\D/g, '');
+  return s.slice(-2) || '?';
+}
+
+function formatarNumero(n) {
+  // Formata BR: 55 11 99999-9999 → (11) 99999-9999
+  if (!n) return '—';
+  const limpo = n.replace(/\\D/g, '');
+  if (limpo.length >= 12 && limpo.startsWith('55')) {
+    const ddd = limpo.slice(2, 4);
+    const resto = limpo.slice(4);
+    if (resto.length === 9) {
+      return `(${ddd}) ${resto.slice(0,5)}-${resto.slice(5)}`;
+    } else if (resto.length === 8) {
+      return `(${ddd}) ${resto.slice(0,4)}-${resto.slice(4)}`;
+    }
+  }
+  return n;
+}
 
 async function carregarConversas() {
   const r = await fetch('/painel/api/conversas');
@@ -227,20 +588,27 @@ async function carregarConversas() {
 
   const lista = document.getElementById('lista');
   if (conversas.length === 0) {
-    lista.innerHTML = '<div class="vazio">Nenhuma conversa ainda</div>';
+    lista.innerHTML = '<div class="vazio">Nenhuma conversa ainda.<br>Vai aparecer aqui quando algum lead mandar mensagem.</div>';
     return;
   }
+
+  const eh_admin = {{ "true" if eh_admin else "false" }};
 
   lista.innerHTML = conversas.map(c => `
     <div class="conversa-item ${c.id === conversaSelecionada ? 'ativa' : ''}"
          onclick="abrirConversa(${c.id})">
-      <div class="top">
-        <span class="lead">${c.numero_lead}</span>
-        <span class="clinica">${c.clinica_nome}</span>
+      <div class="avatar" style="background:${corDoLead(c.numero_lead)}">
+        ${inicialDe(c.numero_lead)}
       </div>
-      <div class="preview">
-        ${c.ultima_role === 'user' ? '' : 'Ana: '}${(c.ultima_mensagem || '—').substring(0, 80)}
-        ${c.pausada ? '<span class="badge">HUMANO</span>' : ''}
+      <div class="ci-corpo">
+        <div class="ci-topo">
+          <span class="ci-lead">${formatarNumero(c.numero_lead)}</span>
+          ${eh_admin ? `<span class="ci-clinica">${escapar(c.clinica_nome)}</span>` : ''}
+        </div>
+        <div class="ci-preview">
+          ${c.ultima_role === 'user' ? '' : 'Ana: '}${escapar((c.ultima_mensagem || '—').substring(0, 70))}
+          ${c.pausada ? '<span class="ci-badge">HUMANO</span>' : ''}
+        </div>
       </div>
     </div>
   `).join('');
@@ -256,8 +624,11 @@ async function abrirConversa(id) {
   document.getElementById('detalhe-topo').style.display = 'flex';
   document.getElementById('mensagens').style.display = 'flex';
 
-  document.getElementById('det-titulo').textContent = data.info.numero_lead;
+  document.getElementById('det-titulo').textContent = formatarNumero(data.info.numero_lead);
   document.getElementById('det-sub').textContent = data.info.clinica_nome;
+  const av = document.getElementById('det-avatar');
+  av.style.background = corDoLead(data.info.numero_lead);
+  av.textContent = inicialDe(data.info.numero_lead);
 
   const btn = document.getElementById('btn-acao');
   if (data.info.pausada) {
@@ -280,7 +651,6 @@ async function abrirConversa(id) {
   `).join('');
   ms.scrollTop = ms.scrollHeight;
 
-  // atualiza lista pra destacar selecionada
   carregarConversas();
 }
 
@@ -312,18 +682,15 @@ async function enviarMsg(e) {
 }
 
 function escapar(s) {
-  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
-                   .replace(/>/g,'&gt;').replace(/\\n/g,'<br>');
+  return (s || '').toString()
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/\\n/g,'<br>');
 }
 
-// Atualiza a cada 5s
 carregarConversas();
 setInterval(() => {
   carregarConversas();
-  if (conversaSelecionada) {
-    // recarrega só as mensagens (sem mexer no scroll se nada novo)
-    abrirConversa(conversaSelecionada);
-  }
+  if (conversaSelecionada) abrirConversa(conversaSelecionada);
 }, 5000);
 </script>
 </body>
@@ -337,12 +704,29 @@ setInterval(() => {
 def registrar_rotas(app):
     """Anexa todas as rotas do painel ao app Flask principal."""
 
-    # ---------- Login / Logout ----------
     @app.route("/painel", methods=["GET"])
     def painel_home():
         if "user_id" not in session:
             return redirect(url_for("painel_login_page"))
-        return render_template_string(PAINEL_HTML, nome=session.get("nome", "—"))
+        nome = session.get("nome", "—")
+        clinica_id = session.get("clinica_id")
+        eh_admin = clinica_id is None
+        # Define o contexto que aparece na sidebar (qual clínica essa pessoa atende)
+        if eh_admin:
+            contexto = "Todas as clínicas"
+        else:
+            # Busca o nome da clínica do usuário
+            clinicas = listar_clinicas()
+            clinica = next((c for c in clinicas if c["id"] == clinica_id), None)
+            contexto = clinica["nome"] if clinica else "—"
+        inicial = (nome[:1] or "?").upper()
+        return render_template_string(
+            PAINEL_HTML,
+            nome=nome,
+            inicial=inicial,
+            eh_admin=eh_admin,
+            contexto=contexto,
+        )
 
     @app.route("/painel/login", methods=["GET"])
     def painel_login_page():
@@ -357,7 +741,7 @@ def registrar_rotas(app):
             return render_template_string(LOGIN_HTML, erro="Email ou senha inválidos.")
         session["user_id"] = user["id"]
         session["nome"] = user.get("nome") or email
-        session["clinica_id"] = user.get("clinica_id")  # None = admin
+        session["clinica_id"] = user.get("clinica_id")
         return redirect(url_for("painel_home"))
 
     @app.route("/painel/logout")
@@ -369,9 +753,8 @@ def registrar_rotas(app):
     @app.route("/painel/api/conversas", methods=["GET"])
     @login_required
     def api_listar_conversas():
-        clinica_id = session.get("clinica_id")  # None = admin = vê tudo
+        clinica_id = session.get("clinica_id")
         rows = listar_conversas(clinica_id=clinica_id)
-        # Converte datetime pra string pro JSON
         for r in rows:
             if r.get("atualizada_em"):
                 r["atualizada_em"] = r["atualizada_em"].isoformat()
@@ -383,11 +766,9 @@ def registrar_rotas(app):
         data = buscar_conversa_completa(conversa_id)
         if not data:
             return jsonify({"erro": "nao encontrada"}), 404
-        # Checa permissão: usuário só vê conversas da própria clínica
         if session.get("clinica_id") is not None:
             if data["info"]["clinica_id"] != session["clinica_id"]:
                 return jsonify({"erro": "sem permissao"}), 403
-        # Datas pra string
         for m in data["mensagens"]:
             if m.get("criada_em"):
                 m["criada_em"] = m["criada_em"].isoformat()
@@ -422,7 +803,6 @@ def registrar_rotas(app):
                 return jsonify({"erro": "sem permissao"}), 403
 
         info = data["info"]
-        # Envia via WhatsApp Cloud API
         try:
             url = f"https://graph.facebook.com/v21.0/{info['phone_number_id']}/messages"
             headers = {
@@ -441,7 +821,6 @@ def registrar_rotas(app):
             print(f"❌ Erro ao enviar mensagem manual: {e}")
             return jsonify({"erro": "falha no envio"}), 500
 
-        # Salva no histórico como se fosse da Ana (mantém continuidade visual).
         salvar_mensagem(conversa_id, "assistant", texto)
         return jsonify({"ok": True})
 
@@ -450,14 +829,12 @@ def registrar_rotas(app):
     @login_required
     @admin_required
     def admin_listar_clinicas():
-        """Lista clínicas pra o admin saber qual ID usar."""
         return jsonify(listar_clinicas())
 
     @app.route("/painel/admin/usuarios", methods=["POST"])
     @login_required
     @admin_required
     def admin_criar_usuario():
-        """Cria um usuário pra uma clínica. JSON: email, senha, nome, clinica_id."""
         body = request.get_json() or {}
         email = (body.get("email") or "").strip().lower()
         senha = body.get("senha") or ""
