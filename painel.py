@@ -475,6 +475,74 @@ PAINEL_HTML = """
   .placeholder-sub {
     font-size: 14px; color: var(--cinza-texto);
   }
+
+  /* ========== BOTÃO VOLTAR (só mobile) ========== */
+  .btn-voltar {
+    display: none;
+    background: none; border: none;
+    width: 36px; height: 36px;
+    align-items: center; justify-content: center;
+    cursor: pointer;
+    margin-right: 4px;
+    border-radius: 8px;
+    transition: background .15s;
+    flex-shrink: 0;
+  }
+  .btn-voltar:hover { background: var(--cinza-divisor); }
+  .btn-voltar svg {
+    width: 22px; height: 22px;
+    stroke: var(--carvao);
+  }
+
+  /* ========== RESPONSIVO MOBILE ========== */
+  @media (max-width: 768px) {
+    .header { padding: 10px 16px; height: 56px; }
+    .header-logo img { height: 24px; }
+    .user-info { display: none; }
+    .user-avatar { width: 32px; height: 32px; font-size: 13px; }
+    .header-user { gap: 10px; }
+    .header-user .sair { padding: 6px 10px; font-size: 12px; }
+
+    /* No mobile: sidebar OU detalhe (não os dois ao mesmo tempo) */
+    .sidebar {
+      width: 100%;
+      border-right: none;
+    }
+    .detalhe {
+      display: none;
+      position: fixed;
+      top: 56px; left: 0; right: 0; bottom: 0;
+      background: var(--cinza-bg);
+      z-index: 10;
+    }
+    /* Quando estado é "conversa aberta": esconde sidebar, mostra detalhe */
+    body.conversa-aberta .sidebar { display: none; }
+    body.conversa-aberta .detalhe { display: flex; }
+
+    .btn-voltar { display: flex; }
+
+    .detalhe-topo { padding: 10px 14px; }
+    .det-info .titulo { font-size: 14px; }
+    .det-info .sub { font-size: 11px; }
+    .det-info .avatar { width: 36px; height: 36px; font-size: 13px; }
+    .btn { padding: 7px 12px; font-size: 12px; }
+
+    .mensagens { padding: 16px; gap: 4px; }
+    .msg { max-width: 80%; font-size: 14px; padding: 9px 12px; }
+
+    .composer { padding: 10px 14px; }
+    .composer textarea { font-size: 14px; padding: 10px 12px; }
+
+    .sidebar-top { padding: 14px 16px 10px; }
+    .conversa-item { padding: 12px 16px; }
+    .ci-clinica { font-size: 9px; }
+
+    .placeholder { padding: 30px 20px; }
+    .placeholder-icone { width: 64px; height: 64px; margin-bottom: 16px; }
+    .placeholder-icone svg { width: 28px; height: 28px; }
+    .placeholder-titulo { font-size: 15px; }
+    .placeholder-sub { font-size: 13px; }
+  }
 </style>
 </head>
 <body>
@@ -520,6 +588,12 @@ PAINEL_HTML = """
 
       <div class="detalhe-topo" id="detalhe-topo" style="display:none">
         <div class="det-info">
+          <button type="button" class="btn-voltar" onclick="voltarParaLista()" aria-label="Voltar">
+            <svg fill="none" stroke="currentColor" stroke-width="2.5"
+                 viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+          </button>
           <div class="avatar" id="det-avatar" style="background:#1FBE82">—</div>
           <div>
             <div class="titulo" id="det-titulo">—</div>
@@ -617,6 +691,10 @@ async function carregarConversas() {
 async function abrirConversa(id) {
   const ehMesmaConversa = (id === conversaSelecionada);
   conversaSelecionada = id;
+
+  // No mobile, ativa o modo "conversa em tela cheia"
+  document.body.classList.add('conversa-aberta');
+
   const r = await fetch('/painel/api/conversas/' + id);
   if (!r.ok) return;
   const data = await r.json();
@@ -663,6 +741,12 @@ async function abrirConversa(id) {
   }
 
   carregarConversas();
+}
+
+function voltarParaLista() {
+  // Sai do modo "conversa em tela cheia" (mobile)
+  document.body.classList.remove('conversa-aberta');
+  conversaSelecionada = null;
 }
 
 async function alternarPausa() {
