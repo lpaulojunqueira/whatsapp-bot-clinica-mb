@@ -25,6 +25,10 @@ from db import (
     marcar_pausa_conversa,
     salvar_mensagem,
     listar_clinicas,
+    listar_clinicas_com_stats,
+    obter_clinica,
+    criar_clinica,
+    atualizar_prompt_clinica,
     criar_usuario_clinica,
 )
 
@@ -558,6 +562,7 @@ PAINEL_HTML = """
         <div class="role">{{ "Admin" if eh_admin else "Cliente" }}</div>
       </div>
       <div class="user-avatar">{{ inicial }}</div>
+      {% if eh_admin %}<a href="/painel/admin" class="sair" style="color: var(--verde-escuro)">Admin</a>{% endif %}
       <a href="/painel/logout" class="sair">Sair</a>
     </div>
   </header>
@@ -794,8 +799,550 @@ setInterval(() => {
 
 
 # ============================================================
-# REGISTRO DAS ROTAS NO APP
+# TELA DE ADMINISTRAÇÃO (só pro admin)
 # ============================================================
+ADMIN_HTML = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — Converte.ai</title>
+<link rel="icon" type="image/png" sizes="64x64" href="/static/favicon-64.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --verde: #1FBE82;
+    --verde-escuro: #16A370;
+    --verde-claro: #E6F7EF;
+    --carvao: #2D2E3C;
+    --cinza-texto: #6B7280;
+    --cinza-fraco: #9CA3AF;
+    --cinza-borda: #E5E7EB;
+    --cinza-divisor: #F3F4F6;
+    --cinza-bg: #F9FAFB;
+    --laranja: #D97706;
+    --laranja-bg: #FEF3C7;
+    --vermelho: #DC2626;
+    --vermelho-bg: #FEE2E2;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter', -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--cinza-bg);
+    color: var(--carvao);
+  }
+
+  /* Header igual ao painel */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px;
+    background: #fff;
+    border-bottom: 1px solid var(--cinza-borda);
+    height: 64px;
+  }
+  .header-logo img { height: 28px; display: block; }
+  .header-user {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .user-info { text-align: right; line-height: 1.2; }
+  .user-info .nome {
+    font-size: 13px; font-weight: 600; color: var(--carvao);
+  }
+  .user-info .role {
+    font-size: 11px; color: var(--cinza-texto); margin-top: 2px;
+  }
+  .user-avatar {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--carvao); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 14px;
+  }
+  .link-volta {
+    color: var(--cinza-texto);
+    text-decoration: none;
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: background .15s, color .15s;
+  }
+  .link-volta:hover { background: var(--cinza-divisor); color: var(--carvao); }
+
+  /* Conteúdo */
+  .container {
+    max-width: 960px;
+    margin: 32px auto;
+    padding: 0 24px;
+  }
+  .titulo-pagina {
+    font-size: 22px; font-weight: 700; margin-bottom: 4px;
+  }
+  .sub-pagina {
+    font-size: 14px; color: var(--cinza-texto); margin-bottom: 24px;
+  }
+
+  /* Abas */
+  .abas {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--cinza-borda);
+    margin-bottom: 24px;
+  }
+  .aba {
+    padding: 10px 16px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--cinza-texto);
+    cursor: pointer;
+    transition: color .15s, border-color .15s;
+    margin-bottom: -1px;
+  }
+  .aba:hover { color: var(--carvao); }
+  .aba.ativa {
+    color: var(--verde-escuro);
+    border-bottom-color: var(--verde);
+    font-weight: 600;
+  }
+
+  /* Card */
+  .card {
+    background: #fff;
+    border: 1px solid var(--cinza-borda);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-titulo {
+    font-size: 15px; font-weight: 600; margin-bottom: 16px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-sub {
+    font-size: 13px; color: var(--cinza-texto); margin-bottom: 16px;
+  }
+
+  /* Tabela */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 8px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--cinza-divisor);
+  }
+  th {
+    font-weight: 600;
+    color: var(--cinza-texto);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td.numero {
+    color: var(--cinza-texto); font-variant-numeric: tabular-nums;
+  }
+
+  /* Form */
+  label {
+    display: block; font-size: 13px; font-weight: 500;
+    color: var(--carvao); margin-bottom: 6px;
+  }
+  .label-dica {
+    color: var(--cinza-texto); font-weight: 400; font-size: 12px;
+  }
+  input, textarea, select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1.5px solid var(--cinza-borda);
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--carvao);
+    margin-bottom: 16px;
+    transition: border-color .15s, box-shadow .15s;
+    background: #fff;
+  }
+  textarea {
+    resize: vertical;
+    min-height: 120px;
+    font-family: 'SF Mono', Monaco, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--verde);
+    box-shadow: 0 0 0 3px var(--verde-claro);
+  }
+  .row { display: flex; gap: 14px; }
+  .row > div { flex: 1; }
+
+  .btn {
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .btn-primario { background: var(--carvao); color: #fff; }
+  .btn-primario:hover { background: #1f2030; }
+  .btn-verde { background: var(--verde); color: #fff; }
+  .btn-verde:hover { background: var(--verde-escuro); }
+  .btn-pequeno {
+    padding: 6px 12px; font-size: 12px;
+    background: var(--cinza-divisor); color: var(--carvao);
+  }
+  .btn-pequeno:hover { background: var(--cinza-borda); }
+
+  /* Mensagens */
+  .alerta {
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .alerta-sucesso {
+    background: var(--verde-claro); color: var(--verde-escuro);
+    border: 1px solid #A7F3D0;
+  }
+  .alerta-erro {
+    background: var(--vermelho-bg); color: var(--vermelho);
+    border: 1px solid #FCA5A5;
+  }
+  .alerta-info {
+    background: var(--laranja-bg); color: var(--laranja);
+    border: 1px solid #FDE68A;
+  }
+  .alerta strong { font-weight: 600; }
+  .alerta code {
+    background: rgba(0,0,0,0.06);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 12px;
+  }
+
+  /* Seções */
+  .secao { display: none; }
+  .secao.ativa { display: block; }
+
+  @media (max-width: 768px) {
+    .container { padding: 0 16px; margin: 20px auto; }
+    .abas { overflow-x: auto; }
+    .aba { white-space: nowrap; }
+    .row { flex-direction: column; gap: 0; }
+    .user-info { display: none; }
+    .header { padding: 10px 16px; height: 56px; }
+    .header-logo img { height: 24px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-logo">
+    <img src="/static/logo-converte.png" alt="Converte.ai">
+  </div>
+  <div class="header-user">
+    <div class="user-info">
+      <div class="nome">{{ nome }}</div>
+      <div class="role">Admin</div>
+    </div>
+    <div class="user-avatar">{{ inicial }}</div>
+    <a href="/painel" class="link-volta">← Painel</a>
+  </div>
+</header>
+
+<div class="container">
+  <div class="titulo-pagina">Administração</div>
+  <div class="sub-pagina">Gerencie clínicas, usuários e prompts da Ana.</div>
+
+  <div class="abas">
+    <button class="aba ativa" data-aba="clinicas" onclick="trocarAba('clinicas')">Clínicas</button>
+    <button class="aba" data-aba="usuarios" onclick="trocarAba('usuarios')">Usuários</button>
+    <button class="aba" data-aba="prompts" onclick="trocarAba('prompts')">Prompts da Ana</button>
+  </div>
+
+  <div id="mensagem"></div>
+
+  <!-- ============ ABA CLÍNICAS ============ -->
+  <div class="secao ativa" id="sec-clinicas">
+
+    <div class="card">
+      <div class="card-titulo">Clínicas cadastradas</div>
+      <div id="lista-clinicas">Carregando...</div>
+    </div>
+
+    <div class="card">
+      <div class="card-titulo">Nova clínica</div>
+      <div class="card-sub">
+        Antes de cadastrar, certifique-se que o número da clínica já está ativo no
+        WhatsApp Business API e que o webhook aponta pro nosso servidor.
+      </div>
+      <form onsubmit="criarClinicaSubmit(event)">
+        <label>Nome da clínica</label>
+        <input type="text" id="cl-nome" required placeholder="Ex: Estética Helena">
+
+        <label>Phone Number ID <span class="label-dica">— do WhatsApp Business API</span></label>
+        <input type="text" id="cl-phone-id" required placeholder="Ex: 654321987654321">
+
+        <label>Telefone humano <span class="label-dica">— pra fallback quando a Ana redirecionar</span></label>
+        <input type="text" id="cl-fone-humano" placeholder="Ex: 19 99999-9999">
+
+        <label>Prompt da Ana <span class="label-dica">— pode colar o prompt-base e editar</span></label>
+        <textarea id="cl-prompt" required placeholder="Você é Ana, secretária da..."></textarea>
+
+        <button class="btn btn-verde" type="submit">Cadastrar clínica</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ ABA USUÁRIOS ============ -->
+  <div class="secao" id="sec-usuarios">
+    <div class="card">
+      <div class="card-titulo">Criar usuário para uma clínica</div>
+      <div class="card-sub">
+        O usuário criado pode logar no /painel e vai ver apenas as conversas da clínica vinculada.
+      </div>
+      <form onsubmit="criarUsuarioSubmit(event)">
+        <label>Clínica</label>
+        <select id="us-clinica" required>
+          <option value="">— Selecione —</option>
+        </select>
+
+        <div class="row">
+          <div>
+            <label>Email</label>
+            <input type="email" id="us-email" required placeholder="cliente@exemplo.com">
+          </div>
+          <div>
+            <label>Nome <span class="label-dica">— opcional</span></label>
+            <input type="text" id="us-nome" placeholder="Nome do responsável">
+          </div>
+        </div>
+
+        <label>Senha <span class="label-dica">— anote, depois não dá pra ver</span></label>
+        <input type="text" id="us-senha" required placeholder="Senha forte">
+
+        <button class="btn btn-verde" type="submit">Criar usuário</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ ABA PROMPTS ============ -->
+  <div class="secao" id="sec-prompts">
+    <div class="card">
+      <div class="card-titulo">Editar prompt da Ana</div>
+      <div class="card-sub">
+        Mudanças no prompt são aplicadas imediatamente nas próximas mensagens.
+        Tome cuidado para não quebrar o tom já calibrado.
+      </div>
+      <label>Selecione a clínica</label>
+      <select id="pr-clinica" onchange="carregarPrompt()">
+        <option value="">— Selecione —</option>
+      </select>
+
+      <div id="pr-editor" style="display:none">
+        <label>Prompt atual da Ana</label>
+        <textarea id="pr-texto" style="min-height: 320px"></textarea>
+        <button class="btn btn-verde" type="button" onclick="salvarPrompt()">Salvar mudanças</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ ABAS ============
+function trocarAba(nome) {
+  document.querySelectorAll('.aba').forEach(a => {
+    a.classList.toggle('ativa', a.dataset.aba === nome);
+  });
+  document.querySelectorAll('.secao').forEach(s => {
+    s.classList.toggle('ativa', s.id === 'sec-' + nome);
+  });
+  limparMsg();
+  if (nome === 'usuarios') carregarClinicasSelect('us-clinica');
+  if (nome === 'prompts') carregarClinicasSelect('pr-clinica');
+}
+
+// ============ MENSAGENS ============
+function mostrarMsg(html, tipo) {
+  const el = document.getElementById('mensagem');
+  el.innerHTML = `<div class="alerta alerta-${tipo}">${html}</div>`;
+  if (tipo === 'sucesso') setTimeout(limparMsg, 5000);
+}
+function limparMsg() { document.getElementById('mensagem').innerHTML = ''; }
+
+// ============ CLÍNICAS — LISTA ============
+async function carregarClinicas() {
+  const r = await fetch('/painel/admin/clinicas');
+  if (!r.ok) {
+    document.getElementById('lista-clinicas').innerHTML = '<p style="color:#9CA3AF">Erro ao carregar.</p>';
+    return;
+  }
+  const clinicas = await r.json();
+  const div = document.getElementById('lista-clinicas');
+  if (clinicas.length === 0) {
+    div.innerHTML = '<p style="color:#9CA3AF">Nenhuma clínica cadastrada ainda.</p>';
+    return;
+  }
+  div.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Clínica</th>
+          <th>Phone Number ID</th>
+          <th class="numero">Conversas</th>
+          <th class="numero">Usuários</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${clinicas.map(c => `
+          <tr>
+            <td><strong>${escapar(c.nome)}</strong></td>
+            <td><code style="font-size:11px">${escapar(c.phone_number_id)}</code></td>
+            <td class="numero">${c.total_conversas}</td>
+            <td class="numero">${c.total_usuarios}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ============ CLÍNICAS — FORMULÁRIO ============
+async function criarClinicaSubmit(e) {
+  e.preventDefault();
+  const body = {
+    nome: document.getElementById('cl-nome').value.trim(),
+    phone_number_id: document.getElementById('cl-phone-id').value.trim(),
+    telefone_humano: document.getElementById('cl-fone-humano').value.trim(),
+    system_prompt: document.getElementById('cl-prompt').value.trim(),
+  };
+  const r = await fetch('/painel/admin/clinicas', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const data = await r.json();
+  if (r.ok) {
+    mostrarMsg(`Clínica <strong>${escapar(body.nome)}</strong> criada com sucesso (id ${data.id}).`, 'sucesso');
+    document.getElementById('cl-nome').value = '';
+    document.getElementById('cl-phone-id').value = '';
+    document.getElementById('cl-fone-humano').value = '';
+    document.getElementById('cl-prompt').value = '';
+    carregarClinicas();
+  } else {
+    mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
+  }
+}
+
+// ============ DROPDOWN DE CLÍNICAS ============
+async function carregarClinicasSelect(selectId) {
+  const r = await fetch('/painel/admin/usuarios');
+  if (!r.ok) return;
+  const clinicas = await r.json();
+  const sel = document.getElementById(selectId);
+  const valorAtual = sel.value;
+  sel.innerHTML = '<option value="">— Selecione —</option>' +
+    clinicas.map(c => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
+  sel.value = valorAtual;
+}
+
+// ============ USUÁRIOS — FORMULÁRIO ============
+async function criarUsuarioSubmit(e) {
+  e.preventDefault();
+  const body = {
+    clinica_id: parseInt(document.getElementById('us-clinica').value),
+    email: document.getElementById('us-email').value.trim(),
+    senha: document.getElementById('us-senha').value,
+    nome: document.getElementById('us-nome').value.trim(),
+  };
+  if (!body.clinica_id) {
+    mostrarMsg('Selecione uma clínica.', 'erro');
+    return;
+  }
+  const r = await fetch('/painel/admin/usuarios', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const data = await r.json();
+  if (r.ok) {
+    mostrarMsg(
+      `Usuário <strong>${escapar(body.email)}</strong> criado. ` +
+      `Anote a senha: <code>${escapar(body.senha)}</code> — ` +
+      `ela não vai aparecer de novo.`,
+      'sucesso'
+    );
+    document.getElementById('us-email').value = '';
+    document.getElementById('us-nome').value = '';
+    document.getElementById('us-senha').value = '';
+  } else {
+    mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
+  }
+}
+
+// ============ PROMPT ============
+async function carregarPrompt() {
+  const clinicaId = document.getElementById('pr-clinica').value;
+  const editor = document.getElementById('pr-editor');
+  if (!clinicaId) {
+    editor.style.display = 'none';
+    return;
+  }
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId);
+  if (!r.ok) {
+    mostrarMsg('Erro ao carregar o prompt.', 'erro');
+    return;
+  }
+  const data = await r.json();
+  document.getElementById('pr-texto').value = data.system_prompt || '';
+  editor.style.display = 'block';
+}
+
+async function salvarPrompt() {
+  const clinicaId = document.getElementById('pr-clinica').value;
+  const texto = document.getElementById('pr-texto').value;
+  if (!clinicaId) return;
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/prompt', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ system_prompt: texto })
+  });
+  if (r.ok) {
+    mostrarMsg('Prompt atualizado com sucesso. As próximas mensagens já vão usar o novo prompt.', 'sucesso');
+  } else {
+    const data = await r.json().catch(() => ({}));
+    mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
+  }
+}
+
+function escapar(s) {
+  return (s || '').toString()
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+
+carregarClinicas();
+</script>
+</body>
+</html>
+"""
+
+
+
 def registrar_rotas(app):
     """Anexa todas as rotas do painel ao app Flask principal."""
 
@@ -942,3 +1489,76 @@ def registrar_rotas(app):
             return jsonify({"id": uid, "email": email})
         except Exception as e:
             return jsonify({"erro": str(e)}), 400
+
+    # ---------- Admin: tela HTML completa ----------
+    @app.route("/painel/admin", methods=["GET"])
+    @login_required
+    @admin_required
+    def admin_pagina():
+        nome = session.get("nome", "—")
+        inicial = (nome[:1] or "?").upper()
+        return render_template_string(ADMIN_HTML, nome=nome, inicial=inicial)
+
+    # ---------- Admin: gerenciar CLÍNICAS ----------
+    @app.route("/painel/admin/clinicas", methods=["GET"])
+    @login_required
+    @admin_required
+    def admin_listar_clinicas_stats():
+        """Lista clínicas com estatísticas (conversas, usuários)."""
+        rows = listar_clinicas_com_stats()
+        for r in rows:
+            if r.get("criada_em"):
+                r["criada_em"] = r["criada_em"].isoformat()
+        return jsonify(rows)
+
+    @app.route("/painel/admin/clinicas", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_criar_clinica():
+        """Cria uma clínica nova."""
+        body = request.get_json() or {}
+        nome = (body.get("nome") or "").strip()
+        phone_id = (body.get("phone_number_id") or "").strip()
+        prompt = (body.get("system_prompt") or "").strip()
+        telefone_humano = (body.get("telefone_humano") or "").strip()
+        if not (nome and phone_id and prompt):
+            return jsonify({
+                "erro": "campos obrigatórios: nome, phone_number_id, system_prompt"
+            }), 400
+        try:
+            cid = criar_clinica(nome, phone_id, prompt, telefone_humano)
+            return jsonify({"id": cid, "nome": nome})
+        except Exception as e:
+            msg = str(e)
+            if "duplicate key" in msg.lower() or "unique" in msg.lower():
+                return jsonify({
+                    "erro": "Já existe uma clínica com esse Phone Number ID."
+                }), 400
+            return jsonify({"erro": msg}), 400
+
+    @app.route("/painel/admin/clinicas/<int:clinica_id>", methods=["GET"])
+    @login_required
+    @admin_required
+    def admin_obter_clinica(clinica_id):
+        """Retorna os dados de uma clínica (inclui o prompt — só admin pode ver)."""
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "não encontrada"}), 404
+        if clinica.get("criada_em"):
+            clinica["criada_em"] = clinica["criada_em"].isoformat()
+        return jsonify(clinica)
+
+    @app.route("/painel/admin/clinicas/<int:clinica_id>/prompt", methods=["PATCH"])
+    @login_required
+    @admin_required
+    def admin_atualizar_prompt(clinica_id):
+        """Atualiza o prompt da Ana de uma clínica."""
+        body = request.get_json() or {}
+        novo_prompt = (body.get("system_prompt") or "").strip()
+        if not novo_prompt:
+            return jsonify({"erro": "prompt vazio"}), 400
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+        atualizar_prompt_clinica(clinica_id, novo_prompt)
+        return jsonify({"ok": True})
