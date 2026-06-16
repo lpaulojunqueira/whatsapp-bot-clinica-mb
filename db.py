@@ -425,6 +425,67 @@ def listar_clinicas():
     return rows
 
 
+def listar_clinicas_com_stats():
+    """Lista clínicas com número de conversas e usuários — pra tela admin."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("""
+        SELECT
+            cl.id, cl.nome, cl.phone_number_id, cl.telefone_humano,
+            cl.criada_em,
+            (SELECT COUNT(*) FROM conversas WHERE clinica_id = cl.id) AS total_conversas,
+            (SELECT COUNT(*) FROM usuarios WHERE clinica_id = cl.id) AS total_usuarios
+        FROM clinicas cl
+        ORDER BY cl.criada_em DESC
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def obter_clinica(clinica_id):
+    """Retorna todos os dados de uma clínica (inclui o prompt)."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM clinicas WHERE id = %s", (clinica_id,))
+    clinica = cur.fetchone()
+    cur.close()
+    conn.close()
+    return clinica
+
+
+def criar_clinica(nome, phone_number_id, system_prompt, telefone_humano):
+    """Cria uma clínica nova."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO clinicas (nome, phone_number_id, system_prompt, telefone_humano)
+        VALUES (%s, %s, %s, %s) RETURNING id
+        """,
+        (nome.strip(), phone_number_id.strip(), system_prompt, (telefone_humano or "").strip())
+    )
+    cid = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return cid
+
+
+def atualizar_prompt_clinica(clinica_id, novo_prompt):
+    """Atualiza o prompt da Ana de uma clínica específica."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE clinicas SET system_prompt = %s WHERE id = %s",
+        (novo_prompt, clinica_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 # ============================================================
 # PROMPT PADRÃO DA CLÍNICA MB (usado só no primeiro seed)
 # Se você quiser editar o prompt depois, edita direto no banco.
