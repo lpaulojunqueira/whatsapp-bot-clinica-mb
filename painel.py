@@ -570,8 +570,18 @@ PAINEL_HTML = """
   <div class="main">
     <aside class="sidebar">
       <div class="sidebar-top">
-        <div class="label">Atendimento de</div>
-        <div class="clinica-nome">{{ contexto }}</div>
+        <div class="label">{{ "Filtrar por" if eh_admin else "Atendimento de" }}</div>
+        {% if eh_admin %}
+          <select id="filtro-cliente" onchange="trocarFiltro()"
+                  style="width:100%; padding:8px 10px; margin-top:6px;
+                         border:1.5px solid var(--cinza-borda); border-radius:8px;
+                         font-family:inherit; font-size:14px; font-weight:600;
+                         color:var(--carvao); background:#fff; cursor:pointer;">
+            <option value="">Todos os clientes</option>
+          </select>
+        {% else %}
+          <div class="clinica-nome">{{ contexto }}</div>
+        {% endif %}
       </div>
       <div class="lista" id="lista">
         <div class="vazio">Carregando...</div>
@@ -623,6 +633,36 @@ PAINEL_HTML = """
 <script>
 let conversaSelecionada = null;
 let conversas = [];
+let filtroClienteId = '';  // vazio = todos (só admin usa)
+
+// Carrega lista de clientes no dropdown (só admin enxerga)
+async function carregarClientesNoFiltro() {
+  const sel = document.getElementById('filtro-cliente');
+  if (!sel) return;  // não é admin
+  try {
+    const r = await fetch('/painel/admin/usuarios');
+    if (!r.ok) return;
+    const clientes = await r.json();
+    const atual = sel.value;
+    sel.innerHTML = '<option value="">Todos os clientes</option>' +
+      clientes.map(c => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
+    sel.value = atual;
+  } catch (e) { /* silencioso */ }
+}
+
+function trocarFiltro() {
+  const sel = document.getElementById('filtro-cliente');
+  filtroClienteId = sel ? sel.value : '';
+  conversaSelecionada = null;
+  document.body.classList.remove('conversa-aberta');
+  // limpa a tela de detalhe
+  document.getElementById('placeholder').style.display = 'flex';
+  document.getElementById('detalhe-topo').style.display = 'none';
+  document.getElementById('mensagens').style.display = 'none';
+  document.getElementById('composer').style.display = 'none';
+  document.getElementById('aviso-pausada').style.display = 'none';
+  carregarConversas();
+}
 
 // Gera cor estável a partir do número (cada lead tem sua cor).
 function corDoLead(numero) {
@@ -661,7 +701,10 @@ function formatarNumero(n) {
 }
 
 async function carregarConversas() {
-  const r = await fetch('/painel/api/conversas');
+  const url = filtroClienteId
+    ? '/painel/api/conversas?clinica_id=' + encodeURIComponent(filtroClienteId)
+    : '/painel/api/conversas';
+  const r = await fetch(url);
   if (!r.ok) return;
   conversas = await r.json();
 
@@ -787,6 +830,7 @@ function escapar(s) {
     .replace(/>/g,'&gt;').replace(/\\n/g,'<br>');
 }
 
+carregarClientesNoFiltro();
 carregarConversas();
 setInterval(() => {
   carregarConversas();
@@ -1066,10 +1110,10 @@ ADMIN_HTML = """
 
 <div class="container">
   <div class="titulo-pagina">Administração</div>
-  <div class="sub-pagina">Gerencie clínicas, usuários e prompts da Ana.</div>
+  <div class="sub-pagina">Gerencie clientes, usuários e prompts da Ana.</div>
 
   <div class="abas">
-    <button class="aba ativa" data-aba="clinicas" onclick="trocarAba('clinicas')">Clínicas</button>
+    <button class="aba ativa" data-aba="clinicas" onclick="trocarAba('clinicas')">Clientes</button>
     <button class="aba" data-aba="usuarios" onclick="trocarAba('usuarios')">Usuários</button>
     <button class="aba" data-aba="prompts" onclick="trocarAba('prompts')">Prompts da Ana</button>
   </div>
@@ -1080,22 +1124,25 @@ ADMIN_HTML = """
   <div class="secao ativa" id="sec-clinicas">
 
     <div class="card">
-      <div class="card-titulo">Clínicas cadastradas</div>
+      <div class="card-titulo">Clientes cadastrados</div>
       <div id="lista-clinicas">Carregando...</div>
     </div>
 
     <div class="card">
-      <div class="card-titulo">Nova clínica</div>
+      <div class="card-titulo">Novo cliente</div>
       <div class="card-sub">
-        Antes de cadastrar, certifique-se que o número da clínica já está ativo no
+        Antes de cadastrar, certifique-se que o número do cliente já está ativo no
         WhatsApp Business API e que o webhook aponta pro nosso servidor.
       </div>
       <form onsubmit="criarClinicaSubmit(event)">
-        <label>Nome da clínica</label>
-        <input type="text" id="cl-nome" required placeholder="Ex: Estética Helena">
+        <label>Nome do cliente</label>
+        <input type="text" id="cl-nome" required placeholder="Ex: Estética Helena, Escritório Silva, Pet Shop XYZ...">
 
         <label>Phone Number ID <span class="label-dica">— do WhatsApp Business API</span></label>
         <input type="text" id="cl-phone-id" required placeholder="Ex: 654321987654321">
+
+        <label>Token do WhatsApp <span class="label-dica">— Access Token do Business Manager do cliente</span></label>
+        <input type="text" id="cl-token" required placeholder="EAAxxx..." autocomplete="off">
 
         <label>Telefone humano <span class="label-dica">— pra fallback quando a Ana redirecionar</span></label>
         <input type="text" id="cl-fone-humano" placeholder="Ex: 19 99999-9999">
@@ -1103,7 +1150,7 @@ ADMIN_HTML = """
         <label>Prompt da Ana <span class="label-dica">— pode colar o prompt-base e editar</span></label>
         <textarea id="cl-prompt" required placeholder="Você é Ana, secretária da..."></textarea>
 
-        <button class="btn btn-verde" type="submit">Cadastrar clínica</button>
+        <button class="btn btn-verde" type="submit">Cadastrar cliente</button>
       </form>
     </div>
   </div>
@@ -1111,12 +1158,12 @@ ADMIN_HTML = """
   <!-- ============ ABA USUÁRIOS ============ -->
   <div class="secao" id="sec-usuarios">
     <div class="card">
-      <div class="card-titulo">Criar usuário para uma clínica</div>
+      <div class="card-titulo">Criar usuário para um cliente</div>
       <div class="card-sub">
-        O usuário criado pode logar no /painel e vai ver apenas as conversas da clínica vinculada.
+        O usuário criado pode logar no /painel e vai ver apenas as conversas do cliente vinculado.
       </div>
       <form onsubmit="criarUsuarioSubmit(event)">
-        <label>Clínica</label>
+        <label>Cliente</label>
         <select id="us-clinica" required>
           <option value="">— Selecione —</option>
         </select>
@@ -1148,7 +1195,7 @@ ADMIN_HTML = """
         Mudanças no prompt são aplicadas imediatamente nas próximas mensagens.
         Tome cuidado para não quebrar o tom já calibrado.
       </div>
-      <label>Selecione a clínica</label>
+      <label>Selecione o cliente</label>
       <select id="pr-clinica" onchange="carregarPrompt()">
         <option value="">— Selecione —</option>
       </select>
@@ -1194,14 +1241,14 @@ async function carregarClinicas() {
   const clinicas = await r.json();
   const div = document.getElementById('lista-clinicas');
   if (clinicas.length === 0) {
-    div.innerHTML = '<p style="color:#9CA3AF">Nenhuma clínica cadastrada ainda.</p>';
+    div.innerHTML = '<p style="color:#9CA3AF">Nenhum cliente cadastrado ainda.</p>';
     return;
   }
   div.innerHTML = `
     <table>
       <thead>
         <tr>
-          <th>Clínica</th>
+          <th>Cliente</th>
           <th>Phone Number ID</th>
           <th class="numero">Conversas</th>
           <th class="numero">Usuários</th>
@@ -1227,6 +1274,7 @@ async function criarClinicaSubmit(e) {
   const body = {
     nome: document.getElementById('cl-nome').value.trim(),
     phone_number_id: document.getElementById('cl-phone-id').value.trim(),
+    whatsapp_token: document.getElementById('cl-token').value.trim(),
     telefone_humano: document.getElementById('cl-fone-humano').value.trim(),
     system_prompt: document.getElementById('cl-prompt').value.trim(),
   };
@@ -1237,9 +1285,10 @@ async function criarClinicaSubmit(e) {
   });
   const data = await r.json();
   if (r.ok) {
-    mostrarMsg(`Clínica <strong>${escapar(body.nome)}</strong> criada com sucesso (id ${data.id}).`, 'sucesso');
+    mostrarMsg(`Cliente <strong>${escapar(body.nome)}</strong> criado com sucesso (id ${data.id}).`, 'sucesso');
     document.getElementById('cl-nome').value = '';
     document.getElementById('cl-phone-id').value = '';
+    document.getElementById('cl-token').value = '';
     document.getElementById('cl-fone-humano').value = '';
     document.getElementById('cl-prompt').value = '';
     carregarClinicas();
@@ -1270,7 +1319,7 @@ async function criarUsuarioSubmit(e) {
     nome: document.getElementById('us-nome').value.trim(),
   };
   if (!body.clinica_id) {
-    mostrarMsg('Selecione uma clínica.', 'erro');
+    mostrarMsg('Selecione um cliente.', 'erro');
     return;
   }
   const r = await fetch('/painel/admin/usuarios', {
@@ -1355,7 +1404,7 @@ def registrar_rotas(app):
         eh_admin = clinica_id is None
         # Define o contexto que aparece na sidebar (qual clínica essa pessoa atende)
         if eh_admin:
-            contexto = "Todas as clínicas"
+            contexto = "Todos os clientes"
         else:
             # Busca o nome da clínica do usuário
             clinicas = listar_clinicas()
@@ -1395,8 +1444,15 @@ def registrar_rotas(app):
     @app.route("/painel/api/conversas", methods=["GET"])
     @login_required
     def api_listar_conversas():
-        clinica_id = session.get("clinica_id")
-        rows = listar_conversas(clinica_id=clinica_id)
+        clinica_id_sessao = session.get("clinica_id")
+        # Usuário comum: SEMPRE vê só a clínica dele (segurança).
+        # Admin: pode filtrar via querystring ?clinica_id=X (ou ver tudo se vazio).
+        if clinica_id_sessao is not None:
+            filtro = clinica_id_sessao
+        else:
+            filtro_str = request.args.get("clinica_id")
+            filtro = int(filtro_str) if filtro_str and filtro_str.isdigit() else None
+        rows = listar_conversas(clinica_id=filtro)
         for r in rows:
             if r.get("atualizada_em"):
                 r["atualizada_em"] = r["atualizada_em"].isoformat()
@@ -1414,6 +1470,8 @@ def registrar_rotas(app):
         for m in data["mensagens"]:
             if m.get("criada_em"):
                 m["criada_em"] = m["criada_em"].isoformat()
+        # NUNCA expõe o token do WhatsApp pro navegador (segurança).
+        data["info"].pop("whatsapp_token", None)
         return jsonify(data)
 
     @app.route("/painel/api/conversas/<int:conversa_id>/alternar-pausa", methods=["POST"])
@@ -1445,10 +1503,13 @@ def registrar_rotas(app):
                 return jsonify({"erro": "sem permissao"}), 403
 
         info = data["info"]
+        # Token específico da clínica (vai vir do banco através do buscar_conversa_completa)
+        # Se não tiver, usa o global do Render como fallback
+        token_clinica = info.get("whatsapp_token") or os.getenv("WHATSAPP_TOKEN")
         try:
             url = f"https://graph.facebook.com/v21.0/{info['phone_number_id']}/messages"
             headers = {
-                "Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}",
+                "Authorization": f"Bearer {token_clinica}",
                 "Content-Type": "application/json",
             }
             payload = {
@@ -1521,18 +1582,19 @@ def registrar_rotas(app):
         phone_id = (body.get("phone_number_id") or "").strip()
         prompt = (body.get("system_prompt") or "").strip()
         telefone_humano = (body.get("telefone_humano") or "").strip()
+        whatsapp_token = (body.get("whatsapp_token") or "").strip()
         if not (nome and phone_id and prompt):
             return jsonify({
                 "erro": "campos obrigatórios: nome, phone_number_id, system_prompt"
             }), 400
         try:
-            cid = criar_clinica(nome, phone_id, prompt, telefone_humano)
+            cid = criar_clinica(nome, phone_id, prompt, telefone_humano, whatsapp_token)
             return jsonify({"id": cid, "nome": nome})
         except Exception as e:
             msg = str(e)
             if "duplicate key" in msg.lower() or "unique" in msg.lower():
                 return jsonify({
-                    "erro": "Já existe uma clínica com esse Phone Number ID."
+                    "erro": "Já existe um cliente com esse Phone Number ID."
                 }), 400
             return jsonify({"erro": msg}), 400
 
