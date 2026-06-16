@@ -54,14 +54,14 @@ DELAY_MAXIMO = 8.0            # nunca mais que 8s
 # ============================================================
 # WHATSAPP API
 # ============================================================
-def marcar_como_lida_e_digitando(phone_number_id, whatsapp_message_id):
+def marcar_como_lida_e_digitando(phone_number_id, whatsapp_message_id, token=None):
     """
     Marca a mensagem do lead como lida (✓✓ azul) E mostra "Ana está digitando...".
-    Faz isso em uma única chamada à API da Meta.
+    Se token for None, usa o global como fallback.
     """
     url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Authorization": f"Bearer {token or WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -76,11 +76,11 @@ def marcar_como_lida_e_digitando(phone_number_id, whatsapp_message_id):
         print(f"⚠️  Erro ao marcar lida/digitando: {e}")
 
 
-def enviar_mensagem_whatsapp(phone_number_id, numero_destino, texto):
-    """Envia uma mensagem de texto para o lead."""
+def enviar_mensagem_whatsapp(phone_number_id, numero_destino, texto, token=None):
+    """Envia uma mensagem de texto para o lead. Token específico ou global."""
     url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Authorization": f"Bearer {token or WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -136,14 +136,14 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual):
 # ============================================================
 # ÁUDIO (download do WhatsApp + transcrição via OpenAI Whisper)
 # ============================================================
-def baixar_audio_whatsapp(media_id):
+def baixar_audio_whatsapp(media_id, token=None):
     """
     Baixa o arquivo de áudio do WhatsApp em duas etapas:
     1) pede a URL temporária do arquivo (autenticada)
     2) baixa o conteúdo binário dessa URL
     Retorna os bytes do áudio, ou None em caso de erro.
     """
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    headers = {"Authorization": f"Bearer {token or WHATSAPP_TOKEN}"}
     try:
         # Etapa 1: pega a URL temporária
         r1 = requests.get(
@@ -258,15 +258,19 @@ def processar_mensagem_em_background(
     Se vier áudio (audio_media_id), transcreve primeiro e usa o texto resultante.
     """
     try:
+        # Token específico da clínica (ou None = usa o global como fallback).
+        token_clinica = clinica.get("whatsapp_token")
+
         # 1) Mostra check azul + "digitando..." imediatamente
         marcar_como_lida_e_digitando(
-            clinica["phone_number_id"], message_id_whatsapp
+            clinica["phone_number_id"], message_id_whatsapp,
+            token=token_clinica
         )
 
         # 1.5) Se for áudio, baixa e transcreve.
         if audio_media_id:
             print(f"🎵 Transcrevendo áudio de {numero_lead}...")
-            audio_bytes = baixar_audio_whatsapp(audio_media_id)
+            audio_bytes = baixar_audio_whatsapp(audio_media_id, token=token_clinica)
             texto_recebido = transcrever_audio(audio_bytes)
 
             if not texto_recebido:
@@ -274,7 +278,8 @@ def processar_mensagem_em_background(
                 enviar_mensagem_whatsapp(
                     clinica["phone_number_id"], numero_lead,
                     "Não consegui entender o áudio direito. "
-                    "Pode tentar de novo ou me escrever?"
+                    "Pode tentar de novo ou me escrever?",
+                    token=token_clinica
                 )
                 return
 
@@ -311,7 +316,8 @@ def processar_mensagem_em_background(
             fallback = "Desculpe, tive um problema técnico. Pode tentar novamente"
             fallback += f" ou ligar no {telefone_humano}?" if telefone_humano else "?"
             enviar_mensagem_whatsapp(
-                clinica["phone_number_id"], numero_lead, fallback
+                clinica["phone_number_id"], numero_lead, fallback,
+                token=token_clinica
             )
             return
 
@@ -323,7 +329,8 @@ def processar_mensagem_em_background(
         for parte in partes:
             time.sleep(calcular_delay(parte))
             enviar_mensagem_whatsapp(
-                clinica["phone_number_id"], numero_lead, parte
+                clinica["phone_number_id"], numero_lead, parte,
+                token=token_clinica
             )
 
         print(f"💬 [{clinica['nome']}] Ana respondeu em {len(partes)} parte(s) pra {numero_lead}")
@@ -437,7 +444,8 @@ def receive_message():
                         enviar_mensagem_whatsapp(
                             phone_number_id, sender,
                             "Por enquanto consigo ler apenas mensagens de texto e áudio. "
-                            "Pode me escrever?"
+                            "Pode me escrever?",
+                            token=clinica.get("whatsapp_token")
                         )
 
         return jsonify({"status": "success"}), 200
