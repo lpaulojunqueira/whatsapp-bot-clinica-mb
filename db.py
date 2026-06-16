@@ -39,8 +39,15 @@ def inicializar_banco():
             phone_number_id TEXT UNIQUE NOT NULL,
             system_prompt TEXT NOT NULL,
             telefone_humano TEXT,
+            whatsapp_token TEXT,
             criada_em TIMESTAMPTZ DEFAULT NOW()
         );
+    """)
+
+    # Garante a coluna do token mesmo em bancos que já existiam antes.
+    cur.execute("""
+        ALTER TABLE clinicas
+        ADD COLUMN IF NOT EXISTS whatsapp_token TEXT;
     """)
 
     # Tabela de conversas — uma por (clínica, lead).
@@ -366,7 +373,8 @@ def buscar_conversa_completa(conversa_id):
     cur.execute(
         """
         SELECT c.id, c.numero_lead, c.pausada, c.clinica_id,
-               cl.nome AS clinica_nome, cl.phone_number_id
+               cl.nome AS clinica_nome, cl.phone_number_id,
+               cl.whatsapp_token
         FROM conversas c
         JOIN clinicas cl ON cl.id = c.clinica_id
         WHERE c.id = %s
@@ -455,16 +463,20 @@ def obter_clinica(clinica_id):
     return clinica
 
 
-def criar_clinica(nome, phone_number_id, system_prompt, telefone_humano):
-    """Cria uma clínica nova."""
+def criar_clinica(nome, phone_number_id, system_prompt, telefone_humano, whatsapp_token=None):
+    """Cria uma clínica nova. Se whatsapp_token for None, usa o global como fallback."""
     conn = _conectar()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO clinicas (nome, phone_number_id, system_prompt, telefone_humano)
-        VALUES (%s, %s, %s, %s) RETURNING id
+        INSERT INTO clinicas (nome, phone_number_id, system_prompt, telefone_humano, whatsapp_token)
+        VALUES (%s, %s, %s, %s, %s) RETURNING id
         """,
-        (nome.strip(), phone_number_id.strip(), system_prompt, (telefone_humano or "").strip())
+        (
+            nome.strip(), phone_number_id.strip(), system_prompt,
+            (telefone_humano or "").strip(),
+            (whatsapp_token or "").strip() or None
+        )
     )
     cid = cur.fetchone()[0]
     conn.commit()
@@ -480,6 +492,19 @@ def atualizar_prompt_clinica(clinica_id, novo_prompt):
     cur.execute(
         "UPDATE clinicas SET system_prompt = %s WHERE id = %s",
         (novo_prompt, clinica_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def atualizar_token_clinica(clinica_id, novo_token):
+    """Atualiza o WhatsApp token de uma clínica específica."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE clinicas SET whatsapp_token = %s WHERE id = %s",
+        ((novo_token or "").strip() or None, clinica_id)
     )
     conn.commit()
     cur.close()
