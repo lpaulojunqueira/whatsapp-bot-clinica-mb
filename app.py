@@ -13,6 +13,7 @@ import threading
 import time
 import random
 import re
+from datetime import datetime, timedelta, timezone
 
 from db import (
     inicializar_banco,
@@ -103,10 +104,93 @@ def enviar_mensagem_whatsapp(phone_number_id, numero_destino, texto, token=None)
 # ============================================================
 # IA (Claude)
 # ============================================================
+DIAS_SEMANA = [
+    "segunda-feira", "terça-feira", "quarta-feira",
+    "quinta-feira", "sexta-feira", "sábado", "domingo"
+]
+MESES = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+]
+TIMEZONE_BRASIL = timezone(timedelta(hours=-3))
+
+
+def _agora_brasil():
+    """Retorna o datetime de agora no horário de Brasília (UTC-3)."""
+    return datetime.now(TIMEZONE_BRASIL)
+
+
+def _formatar_data_extensa(dt):
+    """Quinta-feira, 18 de junho de 2026"""
+    dia_semana = DIAS_SEMANA[dt.weekday()].capitalize()
+    mes = MESES[dt.month - 1]
+    return f"{dia_semana}, {dt.day} de {mes} de {dt.year}"
+
+
+def _periodo_do_dia(dt):
+    """manhã / tarde / noite / madrugada"""
+    h = dt.hour
+    if 5 <= h < 12:
+        return "manhã"
+    if 12 <= h < 18:
+        return "tarde"
+    if 18 <= h < 24:
+        return "noite"
+    return "madrugada"
+
+
+def construir_contexto_temporal():
+    """
+    Monta um bloco de texto que vai ser injetado no system prompt
+    pra Ana ter consciência REAL de data, hora e dia da semana.
+    Sem isso ela inventa datas com base nos dados de treinamento.
+    """
+    agora = _agora_brasil()
+    hoje_extenso = _formatar_data_extensa(agora)
+    hora = agora.strftime("%H:%M")
+    periodo = _periodo_do_dia(agora)
+
+    # Próximos 7 dias pra ela entender quando o lead disser "amanhã", "sexta", etc.
+    proximos = []
+    for i in range(1, 8):
+        d = agora + timedelta(days=i)
+        ref = "amanhã" if i == 1 else (
+            "depois de amanhã" if i == 2 else DIAS_SEMANA[d.weekday()]
+        )
+        proximos.append(
+            f"  - {ref.capitalize()} = {d.day:02d}/{d.month:02d}/{d.year} "
+            f"({DIAS_SEMANA[d.weekday()]})"
+        )
+
+    return (
+        "\n\n"
+        "===== CONTEXTO TEMPORAL ATUAL (USE SEMPRE ESTAS INFORMAÇÕES) =====\n"
+        f"HOJE é {hoje_extenso}.\n"
+        f"AGORA são {hora} ({periodo} de Brasília).\n"
+        "\n"
+        "Próximos dias de referência:\n"
+        + "\n".join(proximos) +
+        "\n\n"
+        "REGRAS ABSOLUTAS sobre datas:\n"
+        "- NUNCA invente nem chute datas. Use SEMPRE as informações acima.\n"
+        "- Quando o lead falar um dia (\"amanhã\", \"sexta\", \"dia 25\"), "
+        "use a lista acima pra saber a data exata e a qual mês se refere.\n"
+        "- Quando o lead disser só um número (\"dia 31\"), assuma que é o "
+        "PRÓXIMO dia 31 a partir de hoje, e confirme natural pelo contexto.\n"
+        "- Cumprimentos devem combinar com o período do dia atual "
+        "(bom dia / boa tarde / boa noite).\n"
+        "================================================================="
+    )
+
+
 def gerar_resposta_ia(system_prompt, historico, mensagem_atual):
     """Chama a API do Claude e retorna o texto da resposta (ou None em erro)."""
     messages = list(historico)
     messages.append({"role": "user", "content": mensagem_atual})
+
+    # Injeta o contexto temporal AO FIM do system prompt — fica em destaque
+    # e por ser a última coisa antes do diálogo, a Ana presta mais atenção.
+    system_completo = system_prompt + construir_contexto_temporal()
 
     headers = {
         "x-api-key": CLAUDE_API_KEY,
@@ -117,7 +201,7 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual):
         "model": CLAUDE_MODEL,
         "max_tokens": 400,
         "temperature": 0.7,
-        "system": system_prompt,
+        "system": system_completo,
         "messages": messages,
     }
 
