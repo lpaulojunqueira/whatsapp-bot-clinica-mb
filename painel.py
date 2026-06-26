@@ -28,6 +28,7 @@ from db import (
     listar_clinicas_com_stats,
     obter_clinica,
     criar_clinica,
+    atualizar_clinica,
     atualizar_prompt_clinica,
     criar_usuario_clinica,
 )
@@ -1209,6 +1210,43 @@ ADMIN_HTML = """
   </div>
 </div>
 
+<!-- ============ MODAL DE EDIÇÃO DE CLIENTE ============ -->
+<div id="modal-edicao" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+     background:rgba(45,46,60,0.5); z-index:100; align-items:flex-start; justify-content:center;
+     overflow-y:auto; padding:30px 16px;">
+  <div style="background:#fff; border-radius:12px; max-width:640px; width:100%;
+              padding:28px; box-shadow:0 8px 32px rgba(0,0,0,0.15);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-size:18px; font-weight:600;">Editar cliente</div>
+      <button type="button" onclick="fecharEdicaoCliente()"
+              style="background:none; border:none; font-size:24px; cursor:pointer; color:var(--cinza-texto);">×</button>
+    </div>
+    <div class="card-sub">Atualize qualquer campo. Mudanças entram em vigor imediatamente.</div>
+    <form onsubmit="salvarEdicaoCliente(event)">
+      <input type="hidden" id="ed-id">
+      <label>Nome do cliente</label>
+      <input type="text" id="ed-nome" required>
+
+      <label>Phone Number ID</label>
+      <input type="text" id="ed-phone-id" required>
+
+      <label>Token do WhatsApp <span class="label-dica">— deixe em branco pra usar o global do Render</span></label>
+      <input type="text" id="ed-token" autocomplete="off">
+
+      <label>Telefone humano <span class="label-dica">— número do dono, recebe notificações e ativa "modo dono"</span></label>
+      <input type="text" id="ed-fone-humano">
+
+      <label>Prompt da Ana</label>
+      <textarea id="ed-prompt" style="min-height:200px"></textarea>
+
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button type="button" class="btn btn-pequeno" onclick="fecharEdicaoCliente()">Cancelar</button>
+        <button type="submit" class="btn btn-verde">Salvar mudanças</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 // ============ ABAS ============
 function trocarAba(nome) {
@@ -1252,6 +1290,7 @@ async function carregarClinicas() {
           <th>Phone Number ID</th>
           <th class="numero">Conversas</th>
           <th class="numero">Usuários</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -1261,11 +1300,58 @@ async function carregarClinicas() {
             <td><code style="font-size:11px">${escapar(c.phone_number_id)}</code></td>
             <td class="numero">${c.total_conversas}</td>
             <td class="numero">${c.total_usuarios}</td>
+            <td><button class="btn btn-pequeno" onclick="abrirEdicaoCliente(${c.id})">Editar</button></td>
           </tr>
         `).join('')}
       </tbody>
     </table>
   `;
+}
+
+// ============ CLÍNICAS — EDIÇÃO ============
+async function abrirEdicaoCliente(clinicaId) {
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId);
+  if (!r.ok) {
+    mostrarMsg('Erro ao carregar dados do cliente.', 'erro');
+    return;
+  }
+  const c = await r.json();
+  document.getElementById('ed-id').value = c.id;
+  document.getElementById('ed-nome').value = c.nome || '';
+  document.getElementById('ed-phone-id').value = c.phone_number_id || '';
+  document.getElementById('ed-token').value = c.whatsapp_token || '';
+  document.getElementById('ed-fone-humano').value = c.telefone_humano || '';
+  document.getElementById('ed-prompt').value = c.system_prompt || '';
+  document.getElementById('modal-edicao').style.display = 'flex';
+}
+
+function fecharEdicaoCliente() {
+  document.getElementById('modal-edicao').style.display = 'none';
+}
+
+async function salvarEdicaoCliente(e) {
+  e.preventDefault();
+  const id = document.getElementById('ed-id').value;
+  const body = {
+    nome: document.getElementById('ed-nome').value.trim(),
+    phone_number_id: document.getElementById('ed-phone-id').value.trim(),
+    whatsapp_token: document.getElementById('ed-token').value.trim(),
+    telefone_humano: document.getElementById('ed-fone-humano').value.trim(),
+    system_prompt: document.getElementById('ed-prompt').value.trim(),
+  };
+  const r = await fetch('/painel/admin/clinicas/' + id, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (r.ok) {
+    mostrarMsg(`Cliente <strong>${escapar(body.nome)}</strong> atualizado.`, 'sucesso');
+    fecharEdicaoCliente();
+    carregarClinicas();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
+  }
 }
 
 // ============ CLÍNICAS — FORMULÁRIO ============
@@ -1624,3 +1710,31 @@ def registrar_rotas(app):
             return jsonify({"erro": "clínica não encontrada"}), 404
         atualizar_prompt_clinica(clinica_id, novo_prompt)
         return jsonify({"ok": True})
+
+    @app.route("/painel/admin/clinicas/<int:clinica_id>", methods=["PATCH"])
+    @login_required
+    @admin_required
+    def admin_atualizar_clinica(clinica_id):
+        """Atualiza qualquer campo de uma clínica (edição completa)."""
+        body = request.get_json() or {}
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+
+        try:
+            atualizar_clinica(
+                clinica_id,
+                nome=body.get("nome"),
+                phone_number_id=body.get("phone_number_id"),
+                telefone_humano=body.get("telefone_humano"),
+                whatsapp_token=body.get("whatsapp_token"),
+                system_prompt=body.get("system_prompt"),
+            )
+            return jsonify({"ok": True})
+        except Exception as e:
+            msg = str(e)
+            if "duplicate key" in msg.lower() or "unique" in msg.lower():
+                return jsonify({
+                    "erro": "Já existe outro cliente com esse Phone Number ID."
+                }), 400
+            return jsonify({"erro": msg}), 400
