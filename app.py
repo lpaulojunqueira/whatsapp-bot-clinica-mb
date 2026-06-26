@@ -765,6 +765,25 @@ def _executar_ferramenta_dono(nome, args, clinica):
     return txt
 
 
+def _formatar_config_horarios_pro_prompt(clinica_id):
+    """Injeta no prompt a configuração de horários da clínica."""
+    cfg = obter_config_horarios(clinica_id)
+    dias_map = {1: "segunda", 2: "terça", 3: "quarta", 4: "quinta",
+                5: "sexta", 6: "sábado", 7: "domingo"}
+    dias_atende = [dias_map[int(d)] for d in cfg["dias_semana"].split(",")]
+    txt = (
+        f"\n\n===== HORÁRIOS DE ATENDIMENTO DESTA CLÍNICA =====\n"
+        f"- Dias: {', '.join(dias_atende)}\n"
+        f"- Horário: {cfg['hora_inicio'].strftime('%H:%M')} às {cfg['hora_fim'].strftime('%H:%M')}\n"
+        f"- Duração de cada consulta: {cfg['duracao_minutos']} minutos\n"
+        f"- Antecedência mínima pra agendamento: {cfg['antecedencia_minima_minutos']} minutos\n"
+    )
+    if cfg.get("almoco_inicio") and cfg.get("almoco_fim"):
+        txt += f"- Pausa: {cfg['almoco_inicio'].strftime('%H:%M')} às {cfg['almoco_fim'].strftime('%H:%M')}\n"
+    txt += "================================================="
+    return txt
+
+
 def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
                      clinica=None, conversa_id=None, numero_lead=None,
                      modo_dono=False):
@@ -988,6 +1007,7 @@ def processar_mensagem_em_background(
     o modo apropriado (assistente executiva) em vez do modo lead.
     """
     try:
+        print(f"🟢 [BG] Iniciando processamento conversa={conversa_id} numero={numero_lead}")
         # Token específico da clínica (ou None = usa o global como fallback).
         token_clinica = clinica.get("whatsapp_token")
 
@@ -1004,11 +1024,13 @@ def processar_mensagem_em_background(
                 modo_dono = True
                 print(f"🔑 [{clinica['nome']}] MODO DONO ativado pra {numero_lead}")
 
+        print(f"🟢 [BG] modo_dono={modo_dono}, vai marcar como lida...")
         # 1) Mostra check azul + "digitando..." imediatamente
         marcar_como_lida_e_digitando(
             clinica["phone_number_id"], message_id_whatsapp,
             token=token_clinica
         )
+        print(f"🟢 [BG] check azul OK")
 
         # 1.5) Se for áudio, baixa e transcreve.
         if audio_media_id:
@@ -1029,10 +1051,12 @@ def processar_mensagem_em_background(
             print(f"   Transcrição: {texto_recebido}")
 
         # 2) Salva a mensagem (sempre, mesmo modo dono).
+        print(f"🟢 [BG] Salvando mensagem no banco...")
         salvar_mensagem(
             conversa_id, "user", texto_recebido,
             message_id_whatsapp=message_id_whatsapp
         )
+        print(f"🟢 [BG] Mensagem salva")
 
         # 2.5) Se humano assumiu a conversa, Ana fica calada.
         # Mas isso NÃO se aplica no modo dono (dono falando direto sempre tem prioridade).
@@ -1041,11 +1065,13 @@ def processar_mensagem_em_background(
             return
 
         # 3) Carrega o histórico recente da conversa.
+        print(f"🟢 [BG] Carregando histórico...")
         historico = obter_historico_conversa(conversa_id, limite=20)
         if historico and historico[-1]["role"] == "user":
             historico_base = historico[:-1]
         else:
             historico_base = historico
+        print(f"🟢 [BG] Histórico carregado: {len(historico_base)} mensagens. Chamando Claude...")
 
         # 4) Gera resposta. Passa flag modo_dono.
         resposta_completa, agendamentos = gerar_resposta_ia(
@@ -1053,6 +1079,7 @@ def processar_mensagem_em_background(
             clinica=clinica, conversa_id=conversa_id, numero_lead=numero_lead,
             modo_dono=modo_dono
         )
+        print(f"🟢 [BG] Claude respondeu. Tamanho: {len(resposta_completa) if resposta_completa else 0}")
 
         if not resposta_completa:
             telefone_humano = clinica.get("telefone_humano") or ""
@@ -1086,7 +1113,10 @@ def processar_mensagem_em_background(
                 notificar_agendamento_para_responsavel(clinica, ag, numero_lead)
 
     except Exception as e:
+        import traceback
         print(f"❌ Erro no processamento de background: {e}")
+        print("🔍 Stack trace completo:")
+        traceback.print_exc()
 
 
 # ============================================================
