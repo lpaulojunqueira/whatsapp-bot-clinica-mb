@@ -95,6 +95,66 @@ def inicializar_banco():
         );
     """)
 
+    # =====================================================
+    # SISTEMA DE AGENDA
+    # =====================================================
+    # Configuração de horários por clínica.
+    # 1 linha por clínica. Se não existir, é criada com padrões ao consultar.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS config_horarios (
+            clinica_id INT PRIMARY KEY REFERENCES clinicas(id),
+            duracao_minutos INT NOT NULL DEFAULT 60,
+            antecedencia_minima_minutos INT NOT NULL DEFAULT 180,
+            dias_semana TEXT NOT NULL DEFAULT '1,2,3,4,5',
+            hora_inicio TIME NOT NULL DEFAULT '09:00',
+            hora_fim TIME NOT NULL DEFAULT '18:00',
+            almoco_inicio TIME,
+            almoco_fim TIME,
+            atualizada_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    # Agendamentos confirmados (ou cancelados / realizados / no_show).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS agendamentos (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            conversa_id INT REFERENCES conversas(id),
+            numero_lead TEXT NOT NULL,
+            nome_lead TEXT,
+            data_hora TIMESTAMPTZ NOT NULL,
+            duracao_minutos INT NOT NULL DEFAULT 60,
+            status TEXT NOT NULL DEFAULT 'confirmado',
+            origem TEXT NOT NULL DEFAULT 'manual',
+            observacao TEXT,
+            criado_em TIMESTAMPTZ DEFAULT NOW(),
+            cancelado_em TIMESTAMPTZ,
+            confirmacao_24h_enviada BOOLEAN DEFAULT FALSE
+        );
+    """)
+    # Índice pra busca rápida por data (a função "horários livres" usa muito).
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_agendamentos_clinica_data
+        ON agendamentos(clinica_id, data_hora)
+        WHERE status = 'confirmado';
+    """)
+
+    # Bloqueios manuais (feriado, ausência, almoço extra, consulta presencial fora).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bloqueios (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            inicio TIMESTAMPTZ NOT NULL,
+            fim TIMESTAMPTZ NOT NULL,
+            motivo TEXT,
+            criado_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bloqueios_clinica_data
+        ON bloqueios(clinica_id, inicio, fim);
+    """)
+
     # Índice pra busca rápida de duplicatas.
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_mensagens_msg_id
@@ -561,3 +621,437 @@ Isso geralmente significa que ele não viu valor suficiente ou tem uma objeção
 - Se o lead tem medo ou insegurança: valide o sentimento com calma e use a experiência dos profissionais como fator de segurança.
 
 Responda sempre como Ana, em no máximo 4 linhas, sem emojis."""
+
+
+# ============================================================
+# SISTEMA DE AGENDA
+# ============================================================
+from datetime import datetime, timedelta, timezone, time as time_type
+
+TIMEZONE_BRASIL = timezone(timedelta(hours=-3))
+
+
+def _agora_brasil():
+    """Datetime de agora no fuso de Brasília (timezone-aware)."""
+    return datetime.now(TIMEZONE_BRASIL)
+
+
+# ---------- CONFIGURAÇÃO DE HORÁRIOS ----------
+def obter_config_horarios(clinica_id):
+    """
+    Retorna a configuração de horários da clínica.
+    Se ainda não existir, cria com padrões e retorna.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM config_horarios WHERE clinica_id = %s", (clinica_id,))
+    config = cur.fetchone()
+    if not config:
+        # Cria com padrões: seg-sex, 9h-18h, 60min, antecedência 3h
+        cur.execute(
+            """
+            INSERT INTO config_horarios (clinica_id) VALUES (%s)
+            RETURNING *
+            """,
+            (clinica_id,)
+        )
+        config = cur.fetchone()
+        conn.commit()
+    cur.close()
+    conn.close()
+    return config
+
+
+def atualizar_config_horarios(clinica_id, duracao_minutos=None,
+                              antecedencia_minima_minutos=None,
+                              dias_semana=None, hora_inicio=None,
+                              hora_fim=None, almoco_inicio=None,
+                              almoco_fim=None):
+    """Atualiza apenas os campos passados; deixa o resto intacto."""
+    # Garante que a config existe
+    obter_config_horarios(clinica_id)
+
+    campos = []
+    valores = []
+    for nome, valor in [
+        ("duracao_minutos", duracao_minutos),
+        ("antecedencia_minima_minutos", antecedencia_minima_minutos),
+        ("dias_semana", dias_semana),
+        ("hora_inicio", hora_inicio),
+        ("hora_fim", hora_fim),
+        ("almoco_inicio", almoco_inicio),
+        ("almoco_fim", almoco_fim),
+    ]:
+        if valor is not None:
+            campos.append(f"{nome} = %s")
+            valores.append(valor)
+
+    if not campos:
+        return
+
+    campos.append("atualizada_em = NOW()")
+    sql = f"UPDATE config_horarios SET {', '.join(campos)} WHERE clinica_id = %s"
+    valores.append(clinica_id)
+
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(sql, tuple(valores))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# ---------- AGENDAMENTOS ----------
+def existe_conflito(clinica_id, data_hora_inicio, duracao_minutos,
+                    ignorar_id=None):
+    """
+    Verifica se existe outro agendamento confirmado OU bloqueio que se sobrepõe
+    ao intervalo [data_hora_inicio, data_hora_inicio + duracao_minutos].
+    Retorna True se há conflito, False se está livre.
+    """
+    fim = data_hora_inicio + timedelta(minutes=duracao_minutos)
+
+    conn = _conectar()
+    cur = conn.cursor()
+
+    # 1) Conflito com outros agendamentos
+    sql_ag = """
+        SELECT 1 FROM agendamentos
+        WHERE clinica_id = %s
+          AND status = 'confirmado'
+          AND data_hora < %s
+          AND data_hora + (duracao_minutos || ' minutes')::interval > %s
+    """
+    params = [clinica_id, fim, data_hora_inicio]
+    if ignorar_id is not None:
+        sql_ag += " AND id <> %s"
+        params.append(ignorar_id)
+    sql_ag += " LIMIT 1"
+    cur.execute(sql_ag, tuple(params))
+    if cur.fetchone():
+        cur.close()
+        conn.close()
+        return True
+
+    # 2) Conflito com bloqueios
+    cur.execute(
+        """
+        SELECT 1 FROM bloqueios
+        WHERE clinica_id = %s
+          AND inicio < %s
+          AND fim > %s
+        LIMIT 1
+        """,
+        (clinica_id, fim, data_hora_inicio)
+    )
+    conflito = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return conflito
+
+
+def criar_agendamento(clinica_id, numero_lead, data_hora, duracao_minutos=None,
+                      nome_lead=None, conversa_id=None, origem='manual',
+                      observacao=None):
+    """
+    Cria um agendamento, validando anti-conflito.
+    Retorna o id do agendamento ou levanta ValueError se conflitar.
+    """
+    if duracao_minutos is None:
+        config = obter_config_horarios(clinica_id)
+        duracao_minutos = config["duracao_minutos"]
+
+    if existe_conflito(clinica_id, data_hora, duracao_minutos):
+        raise ValueError("horário ocupado")
+
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO agendamentos
+            (clinica_id, conversa_id, numero_lead, nome_lead,
+             data_hora, duracao_minutos, status, origem, observacao)
+        VALUES (%s, %s, %s, %s, %s, %s, 'confirmado', %s, %s)
+        RETURNING id
+        """,
+        (clinica_id, conversa_id, numero_lead, nome_lead,
+         data_hora, duracao_minutos, origem, observacao)
+    )
+    ag_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return ag_id
+
+
+def cancelar_agendamento(agendamento_id):
+    """Marca um agendamento como cancelado (não apaga, só muda o status)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE agendamentos
+        SET status = 'cancelado', cancelado_em = NOW()
+        WHERE id = %s AND status = 'confirmado'
+        """,
+        (agendamento_id,)
+    )
+    afetadas = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return afetadas > 0
+
+
+def remarcar_agendamento(agendamento_id, nova_data_hora):
+    """Move um agendamento pra outro horário, validando anti-conflito."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        "SELECT clinica_id, duracao_minutos FROM agendamentos WHERE id = %s",
+        (agendamento_id,)
+    )
+    ag = cur.fetchone()
+    if not ag:
+        cur.close()
+        conn.close()
+        raise ValueError("agendamento não encontrado")
+
+    if existe_conflito(ag["clinica_id"], nova_data_hora,
+                       ag["duracao_minutos"], ignorar_id=agendamento_id):
+        cur.close()
+        conn.close()
+        raise ValueError("horário ocupado")
+
+    cur.execute(
+        "UPDATE agendamentos SET data_hora = %s WHERE id = %s",
+        (nova_data_hora, agendamento_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return True
+
+
+def listar_agendamentos(clinica_id, data_inicio, data_fim,
+                        incluir_cancelados=False):
+    """
+    Lista agendamentos da clínica num intervalo de datas.
+    data_inicio e data_fim são datetimes (timezone-aware).
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    if incluir_cancelados:
+        sql_status = ""
+    else:
+        sql_status = "AND status = 'confirmado'"
+    cur.execute(
+        f"""
+        SELECT id, clinica_id, conversa_id, numero_lead, nome_lead,
+               data_hora, duracao_minutos, status, origem, observacao,
+               criado_em, confirmacao_24h_enviada
+        FROM agendamentos
+        WHERE clinica_id = %s
+          AND data_hora >= %s AND data_hora < %s
+          {sql_status}
+        ORDER BY data_hora ASC
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def obter_agendamento(agendamento_id):
+    """Retorna dados completos de 1 agendamento."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM agendamentos WHERE id = %s", (agendamento_id,))
+    ag = cur.fetchone()
+    cur.close()
+    conn.close()
+    return ag
+
+
+# ---------- HORÁRIOS DISPONÍVEIS ----------
+def obter_horarios_disponiveis(clinica_id, data):
+    """
+    Calcula a lista de horários livres pra agendamento numa data específica.
+    Retorna lista de datetimes (timezone-aware) que estão disponíveis.
+
+    Considera:
+    - Configuração de dias da semana atendidos
+    - Janela de horário (início/fim do expediente)
+    - Almoço (se configurado)
+    - Duração da consulta (slots de N em N minutos)
+    - Agendamentos já marcados
+    - Bloqueios manuais
+    - Antecedência mínima (não permite marcar muito perto)
+    """
+    config = obter_config_horarios(clinica_id)
+    dias_atendidos = [int(d) for d in config["dias_semana"].split(",")]
+
+    # weekday(): segunda = 0, ... domingo = 6
+    # mas o config usa 1 = seg, ... 7 = dom (jeito mais natural)
+    if (data.weekday() + 1) not in dias_atendidos:
+        return []
+
+    duracao = config["duracao_minutos"]
+    hora_ini = config["hora_inicio"]
+    hora_fim = config["hora_fim"]
+    almoco_ini = config["almoco_inicio"]
+    almoco_fim = config["almoco_fim"]
+
+    # Monta os limites do dia em datetime com timezone Brasil
+    inicio_dia = datetime.combine(data, hora_ini).replace(tzinfo=TIMEZONE_BRASIL)
+    fim_dia = datetime.combine(data, hora_fim).replace(tzinfo=TIMEZONE_BRASIL)
+
+    # Janela proibida do almoço (se houver)
+    almoco_inicio_dt = None
+    almoco_fim_dt = None
+    if almoco_ini and almoco_fim:
+        almoco_inicio_dt = datetime.combine(data, almoco_ini).replace(tzinfo=TIMEZONE_BRASIL)
+        almoco_fim_dt = datetime.combine(data, almoco_fim).replace(tzinfo=TIMEZONE_BRASIL)
+
+    # Antecedência mínima: não pode marcar antes de "agora + X minutos"
+    agora = _agora_brasil()
+    primeiro_horario_valido = agora + timedelta(
+        minutes=config["antecedencia_minima_minutos"]
+    )
+
+    # Busca agendamentos do dia em uma query
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT data_hora, duracao_minutos FROM agendamentos
+        WHERE clinica_id = %s
+          AND status = 'confirmado'
+          AND data_hora >= %s AND data_hora < %s
+        """,
+        (clinica_id, inicio_dia - timedelta(hours=4), fim_dia + timedelta(hours=4))
+    )
+    ocupados = [
+        (linha[0], linha[0] + timedelta(minutes=linha[1]))
+        for linha in cur.fetchall()
+    ]
+
+    # Busca bloqueios que se sobrepõem ao dia
+    cur.execute(
+        """
+        SELECT inicio, fim FROM bloqueios
+        WHERE clinica_id = %s
+          AND inicio < %s AND fim > %s
+        """,
+        (clinica_id, fim_dia, inicio_dia)
+    )
+    bloqueios = [(linha[0], linha[1]) for linha in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    # Gera slots de duração em duração e filtra
+    slots_livres = []
+    slot = inicio_dia
+    while slot + timedelta(minutes=duracao) <= fim_dia:
+        slot_fim = slot + timedelta(minutes=duracao)
+
+        # Filtros:
+        ok = True
+        # 1) Antecedência mínima
+        if slot < primeiro_horario_valido:
+            ok = False
+        # 2) Almoço
+        if ok and almoco_inicio_dt and slot < almoco_fim_dt and slot_fim > almoco_inicio_dt:
+            ok = False
+        # 3) Agendamentos existentes
+        if ok:
+            for ag_ini, ag_fim in ocupados:
+                if slot < ag_fim and slot_fim > ag_ini:
+                    ok = False
+                    break
+        # 4) Bloqueios
+        if ok:
+            for b_ini, b_fim in bloqueios:
+                if slot < b_fim and slot_fim > b_ini:
+                    ok = False
+                    break
+
+        if ok:
+            slots_livres.append(slot)
+        slot += timedelta(minutes=duracao)
+
+    return slots_livres
+
+
+def obter_horarios_disponiveis_intervalo(clinica_id, data_inicio, data_fim,
+                                          max_por_dia=4):
+    """
+    Variante: retorna até N horários por dia num intervalo de datas.
+    Útil pra Ana propor opções pro lead ("tenho sexta às 10h, segunda às 14h...").
+    """
+    resultado = []
+    dia = data_inicio
+    while dia <= data_fim:
+        slots = obter_horarios_disponiveis(clinica_id, dia)
+        # Pega N espaçados ao longo do dia (não os primeiros — varia mais)
+        if slots:
+            if len(slots) <= max_por_dia:
+                resultado.extend(slots)
+            else:
+                # Pega espaçado: 1º, último e intermediários
+                passo = max(1, len(slots) // max_por_dia)
+                resultado.extend(slots[::passo][:max_por_dia])
+        dia = dia + timedelta(days=1)
+    return resultado
+
+
+# ---------- BLOQUEIOS ----------
+def criar_bloqueio(clinica_id, inicio, fim, motivo=None):
+    """Cria um bloqueio (período em que a clínica não atende)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO bloqueios (clinica_id, inicio, fim, motivo)
+        VALUES (%s, %s, %s, %s) RETURNING id
+        """,
+        (clinica_id, inicio, fim, motivo)
+    )
+    bid = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return bid
+
+
+def remover_bloqueio(bloqueio_id):
+    """Apaga um bloqueio. Retorna True se existia, False se não."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM bloqueios WHERE id = %s", (bloqueio_id,))
+    afetadas = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return afetadas > 0
+
+
+def listar_bloqueios(clinica_id, data_inicio, data_fim):
+    """Lista bloqueios num intervalo de datas."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT id, inicio, fim, motivo, criado_em FROM bloqueios
+        WHERE clinica_id = %s
+          AND inicio < %s AND fim > %s
+        ORDER BY inicio ASC
+        """,
+        (clinica_id, data_fim, data_inicio)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
