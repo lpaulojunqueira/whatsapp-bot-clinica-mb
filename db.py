@@ -571,6 +571,82 @@ def atualizar_token_clinica(clinica_id, novo_token):
     conn.close()
 
 
+def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
+                     telefone_humano=None, whatsapp_token=None,
+                     system_prompt=None):
+    """
+    Atualiza apenas os campos passados (não-None) de uma clínica.
+    Strings vazias viram None pra telefone/token (campos opcionais).
+    """
+    campos = []
+    valores = []
+
+    if nome is not None:
+        campos.append("nome = %s")
+        valores.append(nome.strip())
+    if phone_number_id is not None:
+        campos.append("phone_number_id = %s")
+        valores.append(phone_number_id.strip())
+    if telefone_humano is not None:
+        campos.append("telefone_humano = %s")
+        valores.append((telefone_humano or "").strip() or None)
+    if whatsapp_token is not None:
+        campos.append("whatsapp_token = %s")
+        valores.append((whatsapp_token or "").strip() or None)
+    if system_prompt is not None:
+        campos.append("system_prompt = %s")
+        valores.append(system_prompt)
+
+    if not campos:
+        return
+
+    sql = f"UPDATE clinicas SET {', '.join(campos)} WHERE id = %s"
+    valores.append(clinica_id)
+
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(sql, tuple(valores))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def buscar_clinica_por_telefone_humano(numero):
+    """
+    Verifica se um número de WhatsApp pertence ao 'dono' de alguma clínica.
+    Compara só os dígitos (ignora formatação).
+    Retorna a clínica se encontrar, ou None.
+    """
+    import re as _re
+    digitos = _re.sub(r"\D", "", numero or "")
+    if not digitos:
+        return None
+    # Normaliza variações de DDI: 11999999999, 5511999999999, +5511999999999
+    variantes = {digitos}
+    if digitos.startswith("55") and len(digitos) > 11:
+        variantes.add(digitos[2:])  # sem o 55
+    else:
+        variantes.add("55" + digitos)  # com 55
+
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM clinicas WHERE telefone_humano IS NOT NULL")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    for clinica in rows:
+        tel_clinica = _re.sub(r"\D", "", clinica.get("telefone_humano") or "")
+        # Compara os últimos 10-11 dígitos (parte sem DDI)
+        if tel_clinica:
+            if tel_clinica in variantes or any(
+                v.endswith(tel_clinica[-10:]) or tel_clinica.endswith(v[-10:])
+                for v in variantes if len(v) >= 10
+            ):
+                return clinica
+    return None
+
+
 # ============================================================
 # PROMPT PADRÃO DA CLÍNICA MB (usado só no primeiro seed)
 # Se você quiser editar o prompt depois, edita direto no banco.
