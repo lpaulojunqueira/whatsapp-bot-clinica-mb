@@ -23,6 +23,12 @@ from db import (
     salvar_mensagem,
     obter_historico_conversa,
     conversa_esta_pausada,
+    obter_horarios_disponiveis,
+    obter_horarios_disponiveis_intervalo,
+    criar_agendamento,
+    cancelar_agendamento,
+    obter_agendamento,
+    obter_config_horarios,
 )
 from painel import registrar_rotas as registrar_rotas_painel
 
@@ -99,6 +105,58 @@ def enviar_mensagem_whatsapp(phone_number_id, numero_destino, texto, token=None)
         if "r" in locals():
             print(f"   Resposta da Meta: {r.text}")
         return False
+
+
+def _normalizar_telefone_br(telefone):
+    """Limpa formatação e adiciona 55 se necessário. Retorna só os dígitos."""
+    if not telefone:
+        return None
+    digitos = re.sub(r"\D", "", telefone)
+    if not digitos:
+        return None
+    # Se já começa com 55 e tem mais de 11 dígitos, está OK.
+    if digitos.startswith("55") and len(digitos) >= 12:
+        return digitos
+    # Se tem 10 ou 11 dígitos, adiciona 55 na frente.
+    if len(digitos) in (10, 11):
+        return "55" + digitos
+    return digitos  # devolve o que veio se for outro formato
+
+
+def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lead):
+    """
+    Envia mensagem no WhatsApp do responsável da clínica avisando do novo agendamento.
+    Usa o número que está em clinica['telefone_humano'].
+    """
+    telefone_responsavel = _normalizar_telefone_br(clinica.get("telefone_humano"))
+    if not telefone_responsavel:
+        print(f"⚠️ Cliente {clinica['nome']} sem telefone_humano — pulando notificação.")
+        return
+
+    data_hora = agendamento_info["agendamento_data_hora"]
+    nome_paciente = agendamento_info["agendamento_nome"]
+    ag_id = agendamento_info["agendamento_criado_id"]
+
+    data_fmt = _formatar_data_extensa(data_hora)
+    hora_fmt = data_hora.strftime("%H:%M")
+
+    texto = (
+        f"🗓️ *Novo agendamento marcado pela Ana*\n\n"
+        f"*Paciente:* {nome_paciente}\n"
+        f"*Telefone:* {numero_lead}\n"
+        f"*Data:* {data_fmt}\n"
+        f"*Horário:* {hora_fmt}\n\n"
+        f"_Ver detalhes e gerenciar no painel Converte.ai_"
+    )
+
+    try:
+        enviar_mensagem_whatsapp(
+            clinica["phone_number_id"], telefone_responsavel, texto,
+            token=clinica.get("whatsapp_token")
+        )
+        print(f"📲 Responsável de {clinica['nome']} notificado sobre agendamento #{ag_id}")
+    except Exception as e:
+        print(f"❌ Falha ao notificar responsável: {e}")
 
 
 # ============================================================
@@ -183,38 +241,318 @@ def construir_contexto_temporal():
     )
 
 
-def gerar_resposta_ia(system_prompt, historico, mensagem_atual):
-    """Chama a API do Claude e retorna o texto da resposta (ou None em erro)."""
+# ============================================================
+# FERRAMENTAS DE AGENDAMENTO (tool use da API do Claude)
+# ============================================================
+INSTRUCOES_AGENDAMENTO = """
+
+===== AGENDAMENTO =====
+Você tem 3 ferramentas pra agendar consultas:
+
+1. **verificar_disponibilidade** — use SEMPRE antes de propor horários ao lead.
+   Nunca chute horários disponíveis. Sempre consulte primeiro.
+
+2. **criar_agendamento** — use SOMENTE quando o lead:
+   (a) confirmou explicitamente um horário específico, E
+   (b) você já tem o NOME COMPLETO dele.
+
+3. **cancelar_agendamento** — use se o lead quiser cancelar um agendamento que ele tem.
+
+FLUXO IDEAL DE AGENDAMENTO:
+1. Lead manifesta interesse em marcar.
+2. Pergunta o NOME COMPLETO de forma natural (mesmo que ele já tenha dito o primeiro nome).
+   Exemplo: "Pra eu já deixar tudo certinho, qual seu nome completo?"
+3. Pergunta a preferência de dia/período (ele pode dizer "amanhã", "sexta de manhã", etc).
+4. Chama verificar_disponibilidade pro intervalo apropriado.
+5. Propõe 2-3 horários reais ao lead (NUNCA invente horários).
+6. Quando o lead confirmar um horário específico, chama criar_agendamento.
+7. Confirma pro lead com data, hora e nome.
+
+REGRAS RÍGIDAS:
+- NUNCA prometa um horário sem antes verificar disponibilidade.
+- NUNCA invente horários ou diga "tenho às 14h" sem ter consultado.
+- Se o lead pedir um horário específico, verifique e responda baseado no resultado real.
+- Se a ferramenta retornar erro de conflito, peça desculpa e proponha outro horário.
+- Sempre confirme o agendamento pro lead com TODOS os detalhes (data por extenso, hora, nome).
+========================
+"""
+
+
+FERRAMENTAS = [
+    {
+        "name": "verificar_disponibilidade",
+        "description": (
+            "Consulta os horários livres pra agendamento em um intervalo de datas. "
+            "Use ANTES de propor horários ao lead. Retorna lista de horários disponíveis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_inicio": {
+                    "type": "string",
+                    "description": "Primeira data do intervalo, formato AAAA-MM-DD. Ex: 2026-06-25"
+                },
+                "data_fim": {
+                    "type": "string",
+                    "description": "Última data do intervalo (inclusiva), formato AAAA-MM-DD. Igual a data_inicio se for só um dia."
+                }
+            },
+            "required": ["data_inicio", "data_fim"]
+        }
+    },
+    {
+        "name": "criar_agendamento",
+        "description": (
+            "Marca uma consulta no horário escolhido pelo lead. "
+            "Use APENAS depois que o lead confirmou o horário E você tem o nome completo dele."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_hora": {
+                    "type": "string",
+                    "description": "Data e hora do agendamento, formato AAAA-MM-DDTHH:MM. Ex: 2026-06-25T14:00"
+                },
+                "nome_completo": {
+                    "type": "string",
+                    "description": "Nome completo do paciente."
+                }
+            },
+            "required": ["data_hora", "nome_completo"]
+        }
+    },
+    {
+        "name": "cancelar_agendamento",
+        "description": (
+            "Cancela um agendamento existente do lead. "
+            "Use só se o lead tem um agendamento ativo e está pedindo pra cancelar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agendamento_id": {
+                    "type": "integer",
+                    "description": "ID do agendamento a cancelar."
+                }
+            },
+            "required": ["agendamento_id"]
+        }
+    }
+]
+
+
+def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
+    """
+    Executa a ferramenta que a Ana chamou e retorna o resultado (string) pra ela.
+    Retorna também um dicionário com info extra (ex: id do agendamento criado).
+    """
+    extra = {}
+
+    if nome == "verificar_disponibilidade":
+        try:
+            data_ini = datetime.strptime(args["data_inicio"], "%Y-%m-%d").date()
+            data_fim = datetime.strptime(args["data_fim"], "%Y-%m-%d").date()
+        except (ValueError, KeyError):
+            return "Erro: formato de data inválido. Use AAAA-MM-DD.", extra
+
+        if (data_fim - data_ini).days > 14:
+            return "Erro: intervalo muito longo. Consulte no máximo 14 dias por vez.", extra
+
+        slots = obter_horarios_disponiveis_intervalo(
+            clinica["id"], data_ini, data_fim, max_por_dia=4
+        )
+
+        if not slots:
+            return (
+                f"Nenhum horário disponível entre {data_ini.strftime('%d/%m')} "
+                f"e {data_fim.strftime('%d/%m')}. Tente um intervalo diferente "
+                f"ou verifique se a clínica atende nesses dias da semana."
+            ), extra
+
+        # Formata pra Ana entender melhor
+        linhas = []
+        dia_atual = None
+        for s in slots:
+            d = s.date()
+            if d != dia_atual:
+                dia_atual = d
+                dia_str = f"{DIAS_SEMANA[d.weekday()]} ({d.strftime('%d/%m')})"
+                linhas.append(f"\n{dia_str.capitalize()}:")
+            linhas.append(f"  - {s.strftime('%H:%M')} (use isso em criar_agendamento: {s.strftime('%Y-%m-%dT%H:%M')})")
+
+        return "Horários disponíveis:" + "".join(linhas), extra
+
+    elif nome == "criar_agendamento":
+        try:
+            dt = datetime.strptime(args["data_hora"], "%Y-%m-%dT%H:%M")
+            from datetime import timezone, timedelta
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=-3)))
+        except (ValueError, KeyError):
+            return "Erro: formato de data/hora inválido. Use AAAA-MM-DDTHH:MM.", extra
+
+        nome_paciente = args.get("nome_completo", "").strip()
+        if not nome_paciente or len(nome_paciente) < 3:
+            return "Erro: nome completo é obrigatório.", extra
+
+        try:
+            ag_id = criar_agendamento(
+                clinica_id=clinica["id"],
+                numero_lead=numero_lead,
+                data_hora=dt,
+                nome_lead=nome_paciente,
+                conversa_id=conversa_id,
+                origem="ana"
+            )
+            extra["agendamento_criado_id"] = ag_id
+            extra["agendamento_data_hora"] = dt
+            extra["agendamento_nome"] = nome_paciente
+
+            data_fmt = _formatar_data_extensa(dt)
+            hora_fmt = dt.strftime("%H:%M")
+            return (
+                f"Agendamento confirmado com sucesso. ID {ag_id}. "
+                f"Paciente: {nome_paciente}. Data: {data_fmt} às {hora_fmt}. "
+                f"Confirme isso ao lead de forma natural na próxima resposta."
+            ), extra
+        except ValueError as e:
+            if "ocupado" in str(e):
+                return (
+                    "Erro: esse horário acabou de ficar ocupado. "
+                    "Peça desculpa ao lead e proponha outro horário "
+                    "(use verificar_disponibilidade de novo)."
+                ), extra
+            return f"Erro ao criar: {e}", extra
+        except Exception as e:
+            return f"Erro técnico ao criar agendamento: {e}", extra
+
+    elif nome == "cancelar_agendamento":
+        try:
+            ag_id = int(args["agendamento_id"])
+        except (ValueError, KeyError, TypeError):
+            return "Erro: ID inválido.", extra
+
+        ag = obter_agendamento(ag_id)
+        if not ag:
+            return "Erro: agendamento não encontrado.", extra
+        # Segurança: só cancela agendamentos da mesma clínica E do mesmo lead
+        if ag["clinica_id"] != clinica["id"] or ag["numero_lead"] != numero_lead:
+            return "Erro: esse agendamento não pertence a esse contato.", extra
+
+        if cancelar_agendamento(ag_id):
+            return "Agendamento cancelado com sucesso. Confirme ao lead.", extra
+        return "Erro: agendamento já estava cancelado ou não pôde ser cancelado.", extra
+
+    return f"Erro: ferramenta '{nome}' desconhecida.", extra
+
+
+def _formatar_config_horarios_pro_prompt(clinica_id):
+    """Injeta no prompt a configuração de horários da clínica."""
+    cfg = obter_config_horarios(clinica_id)
+    dias_map = {1: "segunda", 2: "terça", 3: "quarta", 4: "quinta",
+                5: "sexta", 6: "sábado", 7: "domingo"}
+    dias_atende = [dias_map[int(d)] for d in cfg["dias_semana"].split(",")]
+    txt = (
+        f"\n\n===== HORÁRIOS DE ATENDIMENTO DESTA CLÍNICA =====\n"
+        f"- Dias: {', '.join(dias_atende)}\n"
+        f"- Horário: {cfg['hora_inicio'].strftime('%H:%M')} às {cfg['hora_fim'].strftime('%H:%M')}\n"
+        f"- Duração de cada consulta: {cfg['duracao_minutos']} minutos\n"
+        f"- Antecedência mínima pra agendamento: {cfg['antecedencia_minima_minutos']} minutos\n"
+    )
+    if cfg.get("almoco_inicio") and cfg.get("almoco_fim"):
+        txt += f"- Pausa: {cfg['almoco_inicio'].strftime('%H:%M')} às {cfg['almoco_fim'].strftime('%H:%M')}\n"
+    txt += "================================================="
+    return txt
+
+
+def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
+                     clinica=None, conversa_id=None, numero_lead=None):
+    """
+    Chama a API do Claude e retorna o texto da resposta.
+    Agora suporta tool use: a Ana pode chamar ferramentas de agendamento.
+
+    Retorna uma tupla (texto_resposta, lista_de_agendamentos_criados).
+    """
     messages = list(historico)
     messages.append({"role": "user", "content": mensagem_atual})
 
-    # Injeta o contexto temporal AO FIM do system prompt — fica em destaque
-    # e por ser a última coisa antes do diálogo, a Ana presta mais atenção.
+    # Injeta contexto temporal + config de horários + instruções de agendamento
     system_completo = system_prompt + construir_contexto_temporal()
+    if clinica:
+        system_completo += _formatar_config_horarios_pro_prompt(clinica["id"])
+        system_completo += INSTRUCOES_AGENDAMENTO
 
     headers = {
         "x-api-key": CLAUDE_API_KEY,
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
     }
-    payload = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": 400,
-        "temperature": 0.7,
-        "system": system_completo,
-        "messages": messages,
-    }
 
-    try:
-        r = requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=30)
-        if r.status_code != 200:
-            print(f"❌ Claude retornou {r.status_code}: {r.text}")
-            return None
-        data = r.json()
-        return data["content"][0]["text"].strip()
-    except Exception as e:
-        print(f"❌ Erro ao chamar Claude: {e}")
-        return None
+    agendamentos_criados = []
+    # Loop de tool use — Ana pode chamar ferramentas múltiplas vezes
+    # até dar a resposta final em texto.
+    for tentativa in range(5):  # limite de segurança
+        payload = {
+            "model": CLAUDE_MODEL,
+            "max_tokens": 1024,
+            "temperature": 0.7,
+            "system": system_completo,
+            "messages": messages,
+        }
+        # Só habilita ferramentas se a clínica foi passada
+        if clinica and conversa_id and numero_lead:
+            payload["tools"] = FERRAMENTAS
+
+        try:
+            r = requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=45)
+            if r.status_code != 200:
+                print(f"❌ Claude retornou {r.status_code}: {r.text}")
+                return None, agendamentos_criados
+            data = r.json()
+        except Exception as e:
+            print(f"❌ Erro ao chamar Claude: {e}")
+            return None, agendamentos_criados
+
+        stop_reason = data.get("stop_reason")
+        content = data.get("content", [])
+
+        # Se ela usou ferramenta(s), processa e continua o loop
+        if stop_reason == "tool_use":
+            # Adiciona a resposta dela ao histórico
+            messages.append({"role": "assistant", "content": content})
+
+            # Processa cada tool_use
+            tool_results = []
+            for bloco in content:
+                if bloco.get("type") != "tool_use":
+                    continue
+                nome_tool = bloco["name"]
+                tool_id = bloco["id"]
+                args = bloco.get("input", {})
+                print(f"🔧 Ana chamou: {nome_tool}({args})")
+                resultado, extra = _executar_ferramenta(
+                    nome_tool, args, clinica, conversa_id, numero_lead
+                )
+                print(f"   → {resultado[:120]}")
+                if "agendamento_criado_id" in extra:
+                    agendamentos_criados.append(extra)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": resultado,
+                })
+
+            # Adiciona os resultados das ferramentas como mensagem do usuário
+            messages.append({"role": "user", "content": tool_results})
+            # Continua o loop pra Ana gerar a resposta final
+            continue
+
+        # Resposta final em texto
+        textos = [b["text"] for b in content if b.get("type") == "text"]
+        return ("\n".join(textos).strip(), agendamentos_criados)
+
+    # Se passou de 5 tentativas, algo deu errado
+    print("⚠️ Loop de tool use excedeu 5 tentativas.")
+    return None, agendamentos_criados
 
 
 # ============================================================
@@ -390,9 +728,10 @@ def processar_mensagem_em_background(
         else:
             historico_base = historico
 
-        # 4) Gera resposta com Claude.
-        resposta_completa = gerar_resposta_ia(
-            clinica["system_prompt"], historico_base, texto_recebido
+        # 4) Gera resposta com Claude. Passa o contexto pra Ana poder agendar.
+        resposta_completa, agendamentos = gerar_resposta_ia(
+            clinica["system_prompt"], historico_base, texto_recebido,
+            clinica=clinica, conversa_id=conversa_id, numero_lead=numero_lead
         )
 
         if not resposta_completa:
@@ -418,6 +757,10 @@ def processar_mensagem_em_background(
             )
 
         print(f"💬 [{clinica['nome']}] Ana respondeu em {len(partes)} parte(s) pra {numero_lead}")
+
+        # 7) Se a Ana agendou algo nessa rodada, notifica o responsável da clínica.
+        for ag in agendamentos:
+            notificar_agendamento_para_responsavel(clinica, ag, numero_lead)
 
     except Exception as e:
         print(f"❌ Erro no processamento de background: {e}")
