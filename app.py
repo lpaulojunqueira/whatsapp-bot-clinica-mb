@@ -133,9 +133,13 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
     Envia mensagem no WhatsApp do responsável da clínica avisando do novo agendamento.
     Usa o número que está em clinica['telefone_humano'].
     """
-    telefone_responsavel = _normalizar_telefone_br(clinica.get("telefone_humano"))
+    tel_bruto = clinica.get("telefone_humano")
+    print(f"📲 Tentando notificar responsável. Telefone bruto: '{tel_bruto}'")
+    telefone_responsavel = _normalizar_telefone_br(tel_bruto)
+    print(f"📲 Telefone normalizado: '{telefone_responsavel}'")
+
     if not telefone_responsavel:
-        print(f"⚠️ Cliente {clinica['nome']} sem telefone_humano — pulando notificação.")
+        print(f"⚠️ Cliente {clinica['nome']} sem telefone_humano válido — pulando notificação.")
         return
 
     data_hora = agendamento_info["agendamento_data_hora"]
@@ -154,14 +158,20 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
         f"_Ver detalhes e gerenciar no painel Converte.ai_"
     )
 
+    print(f"📲 Enviando notificação pra {telefone_responsavel} via phone_id {clinica['phone_number_id']}")
     try:
-        enviar_mensagem_whatsapp(
+        sucesso = enviar_mensagem_whatsapp(
             clinica["phone_number_id"], telefone_responsavel, texto,
             token=clinica.get("whatsapp_token")
         )
-        print(f"📲 Responsável de {clinica['nome']} notificado sobre agendamento #{ag_id}")
+        if sucesso:
+            print(f"✅ Responsável de {clinica['nome']} notificado sobre agendamento #{ag_id}")
+        else:
+            print(f"❌ enviar_mensagem_whatsapp retornou False — verifique log acima.")
     except Exception as e:
-        print(f"❌ Falha ao notificar responsável: {e}")
+        print(f"❌ Exceção ao notificar responsável: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # ============================================================
@@ -269,7 +279,9 @@ FLUXO IDEAL DE AGENDAMENTO:
    Exemplo: "Pra eu já deixar tudo certinho, qual seu nome completo?"
 3. Pergunta a preferência de dia/período (ele pode dizer "amanhã", "sexta de manhã", etc).
 4. Chama verificar_disponibilidade pro intervalo apropriado.
-5. Propõe 2-3 horários reais ao lead (NUNCA invente horários).
+5. Propõe horários reais ao lead. Mostra 4-6 opções espaçadas ao longo do(s) dia(s).
+   Sempre deixa CLARO que se nenhum servir, ele pode pedir outros horários ou outro dia
+   ("se preferir outro horário, me avisa que vejo aqui").
 6. Quando o lead confirmar um horário específico, chama criar_agendamento.
 7. Confirma pro lead com data, hora e nome.
 
@@ -277,6 +289,8 @@ REGRAS RÍGIDAS:
 - NUNCA prometa um horário sem antes verificar disponibilidade.
 - NUNCA invente horários ou diga "tenho às 14h" sem ter consultado.
 - Se o lead pedir um horário específico, verifique e responda baseado no resultado real.
+- Se o horário pedido pelo lead NÃO estiver na lista de disponíveis, diga que aquele
+  horário específico não está livre e proponha os mais próximos.
 - Se a ferramenta retornar erro de conflito, peça desculpa e proponha outro horário.
 - Sempre confirme o agendamento pro lead com TODOS os detalhes (data por extenso, hora, nome).
 ========================
