@@ -31,6 +31,8 @@ from db import (
     atualizar_clinica,
     atualizar_prompt_clinica,
     criar_usuario_clinica,
+    obter_config_horarios,
+    atualizar_config_horarios,
 )
 
 
@@ -1117,6 +1119,7 @@ ADMIN_HTML = """
     <button class="aba ativa" data-aba="clinicas" onclick="trocarAba('clinicas')">Clientes</button>
     <button class="aba" data-aba="usuarios" onclick="trocarAba('usuarios')">Usuários</button>
     <button class="aba" data-aba="prompts" onclick="trocarAba('prompts')">Prompts da Ana</button>
+    <button class="aba" data-aba="horarios" onclick="trocarAba('horarios')">Horários</button>
   </div>
 
   <div id="mensagem"></div>
@@ -1208,6 +1211,84 @@ ADMIN_HTML = """
       </div>
     </div>
   </div>
+
+  <!-- ============ ABA HORÁRIOS ============ -->
+  <div class="secao" id="sec-horarios">
+    <div class="card">
+      <div class="card-titulo">Configurar horários de atendimento</div>
+      <div class="card-sub">
+        Defina os dias, horários e duração da consulta. A Ana usa isso pra agendar
+        sem ultrapassar os limites da clínica. Mudanças entram em vigor imediatamente.
+      </div>
+
+      <label>Selecione o cliente</label>
+      <select id="hr-clinica" onchange="carregarHorarios()">
+        <option value="">— Selecione —</option>
+      </select>
+
+      <div id="hr-editor" style="display:none; margin-top: 16px;">
+        <label>Dias da semana atendidos</label>
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px;">
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="1" style="width:auto; margin:0;"> Segunda
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="2" style="width:auto; margin:0;"> Terça
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="3" style="width:auto; margin:0;"> Quarta
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="4" style="width:auto; margin:0;"> Quinta
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="5" style="width:auto; margin:0;"> Sexta
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="6" style="width:auto; margin:0;"> Sábado
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-weight:400; cursor:pointer;">
+            <input type="checkbox" class="hr-dia" value="7" style="width:auto; margin:0;"> Domingo
+          </label>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Horário de abertura</label>
+            <input type="time" id="hr-inicio" required>
+          </div>
+          <div>
+            <label>Horário de fechamento</label>
+            <input type="time" id="hr-fim" required>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Início do almoço <span class="label-dica">— opcional</span></label>
+            <input type="time" id="hr-almoco-inicio">
+          </div>
+          <div>
+            <label>Fim do almoço <span class="label-dica">— opcional</span></label>
+            <input type="time" id="hr-almoco-fim">
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Duração de cada consulta (minutos)</label>
+            <input type="number" id="hr-duracao" min="15" max="480" step="15" required>
+          </div>
+          <div>
+            <label>Antecedência mínima (minutos) <span class="label-dica">— ex: 180 = 3h</span></label>
+            <input type="number" id="hr-antecedencia" min="0" max="10080" required>
+          </div>
+        </div>
+
+        <button class="btn btn-verde" type="button" onclick="salvarHorarios()">Salvar configurações</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ============ MODAL DE EDIÇÃO DE CLIENTE ============ -->
@@ -1259,6 +1340,7 @@ function trocarAba(nome) {
   limparMsg();
   if (nome === 'usuarios') carregarClinicasSelect('us-clinica');
   if (nome === 'prompts') carregarClinicasSelect('pr-clinica');
+  if (nome === 'horarios') carregarClinicasSelect('hr-clinica');
 }
 
 // ============ MENSAGENS ============
@@ -1458,6 +1540,72 @@ async function salvarPrompt() {
   });
   if (r.ok) {
     mostrarMsg('Prompt atualizado com sucesso. As próximas mensagens já vão usar o novo prompt.', 'sucesso');
+  } else {
+    const data = await r.json().catch(() => ({}));
+    mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
+  }
+}
+
+// ============ HORÁRIOS ============
+async function carregarHorarios() {
+  const clinicaId = document.getElementById('hr-clinica').value;
+  const editor = document.getElementById('hr-editor');
+  if (!clinicaId) {
+    editor.style.display = 'none';
+    return;
+  }
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/horarios');
+  if (!r.ok) {
+    mostrarMsg('Erro ao carregar horários.', 'erro');
+    return;
+  }
+  const cfg = await r.json();
+
+  // Dias da semana
+  const diasAtivos = (cfg.dias_semana || '').split(',').map(d => d.trim());
+  document.querySelectorAll('.hr-dia').forEach(cb => {
+    cb.checked = diasAtivos.includes(cb.value);
+  });
+
+  // Horários (vêm como "HH:MM:SS", input type=time aceita só "HH:MM")
+  document.getElementById('hr-inicio').value = (cfg.hora_inicio || '').substring(0, 5);
+  document.getElementById('hr-fim').value = (cfg.hora_fim || '').substring(0, 5);
+  document.getElementById('hr-almoco-inicio').value = (cfg.almoco_inicio || '').substring(0, 5);
+  document.getElementById('hr-almoco-fim').value = (cfg.almoco_fim || '').substring(0, 5);
+  document.getElementById('hr-duracao').value = cfg.duracao_minutos;
+  document.getElementById('hr-antecedencia').value = cfg.antecedencia_minima_minutos;
+
+  editor.style.display = 'block';
+}
+
+async function salvarHorarios() {
+  const clinicaId = document.getElementById('hr-clinica').value;
+  if (!clinicaId) return;
+
+  const dias = Array.from(document.querySelectorAll('.hr-dia'))
+    .filter(cb => cb.checked).map(cb => cb.value);
+  if (dias.length === 0) {
+    mostrarMsg('Selecione pelo menos um dia da semana.', 'erro');
+    return;
+  }
+
+  const body = {
+    dias_semana: dias.join(','),
+    hora_inicio: document.getElementById('hr-inicio').value,
+    hora_fim: document.getElementById('hr-fim').value,
+    almoco_inicio: document.getElementById('hr-almoco-inicio').value || null,
+    almoco_fim: document.getElementById('hr-almoco-fim').value || null,
+    duracao_minutos: parseInt(document.getElementById('hr-duracao').value, 10),
+    antecedencia_minima_minutos: parseInt(document.getElementById('hr-antecedencia').value, 10),
+  };
+
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/horarios', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (r.ok) {
+    mostrarMsg('Horários atualizados. A Ana já passa a respeitar a nova configuração.', 'sucesso');
   } else {
     const data = await r.json().catch(() => ({}));
     mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
@@ -1738,3 +1886,45 @@ def registrar_rotas(app):
                     "erro": "Já existe outro cliente com esse Phone Number ID."
                 }), 400
             return jsonify({"erro": msg}), 400
+
+    # ---------- Admin: horários de atendimento por clínica ----------
+    @app.route("/painel/admin/clinicas/<int:clinica_id>/horarios", methods=["GET"])
+    @login_required
+    @admin_required
+    def admin_obter_horarios(clinica_id):
+        """Retorna a configuração de horários da clínica (cria padrão se não existir)."""
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+        cfg = obter_config_horarios(clinica_id)
+        # Converte tipos pra JSON
+        for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim"):
+            if cfg.get(campo) is not None:
+                cfg[campo] = cfg[campo].strftime("%H:%M:%S")
+        if cfg.get("atualizada_em"):
+            cfg["atualizada_em"] = cfg["atualizada_em"].isoformat()
+        return jsonify(cfg)
+
+    @app.route("/painel/admin/clinicas/<int:clinica_id>/horarios", methods=["PATCH"])
+    @login_required
+    @admin_required
+    def admin_atualizar_horarios(clinica_id):
+        """Atualiza a configuração de horários de uma clínica."""
+        body = request.get_json() or {}
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+        try:
+            atualizar_config_horarios(
+                clinica_id,
+                duracao_minutos=body.get("duracao_minutos"),
+                antecedencia_minima_minutos=body.get("antecedencia_minima_minutos"),
+                dias_semana=body.get("dias_semana"),
+                hora_inicio=body.get("hora_inicio"),
+                hora_fim=body.get("hora_fim"),
+                almoco_inicio=body.get("almoco_inicio"),
+                almoco_fim=body.get("almoco_fim"),
+            )
+            return jsonify({"ok": True})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 400
