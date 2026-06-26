@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from db import (
     inicializar_banco,
     buscar_clinica_por_phone_id,
+    buscar_clinica_por_telefone_humano,
     obter_ou_criar_conversa,
     mensagem_ja_processada,
     salvar_mensagem,
@@ -29,6 +30,10 @@ from db import (
     cancelar_agendamento,
     obter_agendamento,
     obter_config_horarios,
+    listar_agendamentos,
+    criar_bloqueio,
+    remover_bloqueio,
+    listar_bloqueios,
 )
 from painel import registrar_rotas as registrar_rotas_painel
 
@@ -341,6 +346,172 @@ FERRAMENTAS = [
 ]
 
 
+# ============================================================
+# MODO DONO — o responsável da clínica falando com a Ana
+# ============================================================
+PROMPT_MODO_DONO = """Você é Ana, mas agora está conversando com o RESPONSÁVEL da clínica (o dono, o profissional, ou alguém da equipe administrativa) — NÃO com um paciente.
+
+Seu papel agora é de ASSISTENTE EXECUTIVA. O dono usa você pra:
+- Bloquear horários quando ele não vai estar disponível (cirurgia longa, viagem, compromisso pessoal)
+- Registrar manualmente um paciente que marcou por outro canal (telefone direto, presencial)
+- Cancelar bloqueios anteriores
+- Consultar o que está marcado em determinado período
+- Desbloquear horários
+
+TOM: direto, eficiente, sem rodeios. Sem "consultar nossa equipe", sem "vou verificar", sem floreios. Confirma a ação rapidamente.
+
+Exemplos do tom esperado:
+- "Bloqueado das 14h às 16h amanhã. Motivo registrado: cirurgia longa."
+- "Maria Silva marcada pra sexta 25/06 às 10h. Confirmação automática enviada."
+- "Você tem 3 agendamentos amanhã: 9h João, 10h Carlos, 14h Patricia."
+- "Bloqueio das 14h removido."
+
+REGRAS:
+- Não invente dados. Use as ferramentas pra tudo.
+- Se o dono pedir algo ambíguo, pergunte uma pergunta curta e específica. Não enrole.
+- Confirme cada ação com data e hora exatas, sem floreios.
+- NUNCA trate o dono como paciente. Não pergunte se ele quer marcar consulta pra ele.
+
+USE estas ferramentas:
+- bloquear_horario: cria um bloqueio na agenda (período em que a clínica não pode receber agendamentos da Ana com pacientes)
+- agendar_paciente_manual: registra um agendamento que veio de fora (telefone direto, walk-in, etc)
+- listar_agenda: consulta o que está marcado num período
+- listar_bloqueios: consulta bloqueios ativos num período
+- remover_bloqueio: remove um bloqueio existente
+- verificar_disponibilidade: também disponível, se o dono quiser ver horários livres
+"""
+
+
+FERRAMENTAS_DONO = [
+    {
+        "name": "bloquear_horario",
+        "description": (
+            "Cria um bloqueio na agenda. Use quando o dono falar que vai estar "
+            "ocupado, vai sair, vai ter cirurgia longa, viagem, etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "inicio": {
+                    "type": "string",
+                    "description": "Início do bloqueio, formato AAAA-MM-DDTHH:MM. Ex: 2026-06-25T14:00"
+                },
+                "fim": {
+                    "type": "string",
+                    "description": "Fim do bloqueio, formato AAAA-MM-DDTHH:MM. Ex: 2026-06-25T16:00"
+                },
+                "motivo": {
+                    "type": "string",
+                    "description": "Motivo do bloqueio (curto). Ex: 'cirurgia longa', 'compromisso pessoal', 'viagem'."
+                }
+            },
+            "required": ["inicio", "fim"]
+        }
+    },
+    {
+        "name": "agendar_paciente_manual",
+        "description": (
+            "Registra um agendamento que veio por outro canal (telefone, walk-in). "
+            "Use quando o dono falar 'marquei X pra tal dia/hora'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_hora": {
+                    "type": "string",
+                    "description": "Data e hora do agendamento, formato AAAA-MM-DDTHH:MM."
+                },
+                "nome_paciente": {
+                    "type": "string",
+                    "description": "Nome completo do paciente."
+                },
+                "telefone_paciente": {
+                    "type": "string",
+                    "description": "Telefone do paciente (opcional, mas idealmente pedir). Pode ser vazio."
+                },
+                "observacao": {
+                    "type": "string",
+                    "description": "Observação opcional do dono."
+                }
+            },
+            "required": ["data_hora", "nome_paciente"]
+        }
+    },
+    {
+        "name": "listar_agenda",
+        "description": (
+            "Consulta agendamentos confirmados num intervalo de datas. "
+            "Use quando o dono perguntar 'o que tenho amanhã', 'mostra a semana', etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_inicio": {
+                    "type": "string",
+                    "description": "Primeira data do intervalo, formato AAAA-MM-DD."
+                },
+                "data_fim": {
+                    "type": "string",
+                    "description": "Última data do intervalo (inclusiva), formato AAAA-MM-DD."
+                }
+            },
+            "required": ["data_inicio", "data_fim"]
+        }
+    },
+    {
+        "name": "listar_bloqueios",
+        "description": "Consulta bloqueios ativos num intervalo de datas.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_inicio": {
+                    "type": "string",
+                    "description": "Primeira data, formato AAAA-MM-DD."
+                },
+                "data_fim": {
+                    "type": "string",
+                    "description": "Última data (inclusiva), formato AAAA-MM-DD."
+                }
+            },
+            "required": ["data_inicio", "data_fim"]
+        }
+    },
+    {
+        "name": "remover_bloqueio",
+        "description": "Remove um bloqueio existente (recebe o ID).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bloqueio_id": {
+                    "type": "integer",
+                    "description": "ID do bloqueio a remover."
+                }
+            },
+            "required": ["bloqueio_id"]
+        }
+    },
+    # A Ana no modo dono também pode verificar disponibilidade
+    {
+        "name": "verificar_disponibilidade",
+        "description": "Consulta horários livres num intervalo de datas.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "data_inicio": {
+                    "type": "string",
+                    "description": "Primeira data, formato AAAA-MM-DD."
+                },
+                "data_fim": {
+                    "type": "string",
+                    "description": "Última data (inclusiva), formato AAAA-MM-DD."
+                }
+            },
+            "required": ["data_inicio", "data_fim"]
+        }
+    }
+]
+
+
 def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
     """
     Executa a ferramenta que a Ana chamou e retorna o resultado (string) pra ela.
@@ -445,7 +616,137 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
     return f"Erro: ferramenta '{nome}' desconhecida.", extra
 
 
-def _formatar_config_horarios_pro_prompt(clinica_id):
+def _executar_ferramenta_dono(nome, args, clinica):
+    """
+    Executa as ferramentas do MODO DONO (dentista falando com Ana).
+    Retorna (resultado_string, extra_dict).
+    """
+    extra = {}
+    from datetime import timezone, timedelta
+    tz = timezone(timedelta(hours=-3))
+
+    if nome == "bloquear_horario":
+        try:
+            inicio = datetime.strptime(args["inicio"], "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+            fim = datetime.strptime(args["fim"], "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+        except (ValueError, KeyError):
+            return "Erro: formato de data/hora inválido. Use AAAA-MM-DDTHH:MM.", extra
+
+        if fim <= inicio:
+            return "Erro: o fim do bloqueio precisa ser depois do início.", extra
+
+        motivo = args.get("motivo") or "Bloqueio manual"
+        try:
+            bid = criar_bloqueio(clinica["id"], inicio, fim, motivo)
+            extra["bloqueio_criado_id"] = bid
+            return (
+                f"Bloqueio #{bid} criado: "
+                f"{inicio.strftime('%d/%m %H:%M')} até {fim.strftime('%d/%m %H:%M')}. "
+                f"Motivo: {motivo}."
+            ), extra
+        except Exception as e:
+            return f"Erro ao criar bloqueio: {e}", extra
+
+    elif nome == "agendar_paciente_manual":
+        try:
+            dt = datetime.strptime(args["data_hora"], "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+        except (ValueError, KeyError):
+            return "Erro: formato de data/hora inválido.", extra
+
+        nome_paciente = (args.get("nome_paciente") or "").strip()
+        if not nome_paciente or len(nome_paciente) < 3:
+            return "Erro: nome do paciente é obrigatório.", extra
+
+        telefone = (args.get("telefone_paciente") or "").strip()
+        observacao = args.get("observacao") or "Agendado manualmente pelo responsável"
+
+        try:
+            ag_id = criar_agendamento(
+                clinica_id=clinica["id"],
+                numero_lead=telefone or "manual",
+                data_hora=dt,
+                nome_lead=nome_paciente,
+                origem="manual",
+                observacao=observacao
+            )
+            extra["agendamento_criado_id"] = ag_id
+            return (
+                f"Agendamento #{ag_id} registrado: "
+                f"{nome_paciente} em {dt.strftime('%d/%m às %H:%M')}. "
+                f"{'Telefone: ' + telefone if telefone else 'Sem telefone.'}"
+            ), extra
+        except ValueError as e:
+            if "ocupado" in str(e):
+                return (
+                    "Esse horário está ocupado (já tem outro agendamento ou bloqueio). "
+                    "Quer ver o que tem ali?"
+                ), extra
+            return f"Erro: {e}", extra
+
+    elif nome == "listar_agenda":
+        try:
+            d_ini = datetime.strptime(args["data_inicio"], "%Y-%m-%d").date()
+            d_fim = datetime.strptime(args["data_fim"], "%Y-%m-%d").date()
+        except (ValueError, KeyError):
+            return "Erro: formato de data inválido.", extra
+
+        ini_dt = datetime.combine(d_ini, datetime.min.time()).replace(tzinfo=tz)
+        fim_dt = datetime.combine(d_fim, datetime.max.time()).replace(tzinfo=tz)
+        ags = listar_agendamentos(clinica["id"], ini_dt, fim_dt)
+
+        if not ags:
+            return f"Nenhum agendamento entre {d_ini.strftime('%d/%m')} e {d_fim.strftime('%d/%m')}.", extra
+
+        linhas = []
+        for a in ags:
+            dh = a["data_hora"]
+            origem = "Ana" if a["origem"] == "ana" else "Manual"
+            linhas.append(
+                f"  - {dh.strftime('%d/%m %H:%M')} | {a['nome_lead']} "
+                f"({a['numero_lead']}) [{origem}]"
+            )
+        return f"Agendamentos:\n" + "\n".join(linhas), extra
+
+    elif nome == "listar_bloqueios":
+        try:
+            d_ini = datetime.strptime(args["data_inicio"], "%Y-%m-%d").date()
+            d_fim = datetime.strptime(args["data_fim"], "%Y-%m-%d").date()
+        except (ValueError, KeyError):
+            return "Erro: formato de data inválido.", extra
+
+        ini_dt = datetime.combine(d_ini, datetime.min.time()).replace(tzinfo=tz)
+        fim_dt = datetime.combine(d_fim, datetime.max.time()).replace(tzinfo=tz)
+        bloqs = listar_bloqueios(clinica["id"], ini_dt, fim_dt)
+
+        if not bloqs:
+            return f"Nenhum bloqueio entre {d_ini.strftime('%d/%m')} e {d_fim.strftime('%d/%m')}.", extra
+
+        linhas = []
+        for b in bloqs:
+            linhas.append(
+                f"  - #{b['id']}: {b['inicio'].strftime('%d/%m %H:%M')} → "
+                f"{b['fim'].strftime('%d/%m %H:%M')} | {b['motivo'] or 'sem motivo'}"
+            )
+        return f"Bloqueios:\n" + "\n".join(linhas), extra
+
+    elif nome == "remover_bloqueio":
+        try:
+            bid = int(args["bloqueio_id"])
+        except (ValueError, KeyError, TypeError):
+            return "Erro: ID inválido.", extra
+
+        if remover_bloqueio(bid):
+            return f"Bloqueio #{bid} removido.", extra
+        return f"Bloqueio #{bid} não encontrado.", extra
+
+    elif nome == "verificar_disponibilidade":
+        # Reutiliza a mesma lógica da Ana com lead
+        return _executar_ferramenta("verificar_disponibilidade", args, clinica, None, None)
+
+    return f"Ferramenta '{nome}' desconhecida.", extra
+
+
+
     """Injeta no prompt a configuração de horários da clínica."""
     cfg = obter_config_horarios(clinica_id)
     dias_map = {1: "segunda", 2: "terça", 3: "quarta", 4: "quinta",
@@ -465,21 +766,36 @@ def _formatar_config_horarios_pro_prompt(clinica_id):
 
 
 def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
-                     clinica=None, conversa_id=None, numero_lead=None):
+                     clinica=None, conversa_id=None, numero_lead=None,
+                     modo_dono=False):
     """
     Chama a API do Claude e retorna o texto da resposta.
     Agora suporta tool use: a Ana pode chamar ferramentas de agendamento.
+
+    Se modo_dono=True, usa prompt e ferramentas de "assistente executiva do dono".
 
     Retorna uma tupla (texto_resposta, lista_de_agendamentos_criados).
     """
     messages = list(historico)
     messages.append({"role": "user", "content": mensagem_atual})
 
-    # Injeta contexto temporal + config de horários + instruções de agendamento
-    system_completo = system_prompt + construir_contexto_temporal()
-    if clinica:
-        system_completo += _formatar_config_horarios_pro_prompt(clinica["id"])
-        system_completo += INSTRUCOES_AGENDAMENTO
+    if modo_dono:
+        # Modo dono: prompt fixo de assistente executiva + ferramentas administrativas
+        system_completo = PROMPT_MODO_DONO + construir_contexto_temporal()
+        if clinica:
+            system_completo += _formatar_config_horarios_pro_prompt(clinica["id"])
+        ferramentas_disponiveis = FERRAMENTAS_DONO
+        executar_func = lambda nome, args: _executar_ferramenta_dono(nome, args, clinica)
+    else:
+        # Modo lead: prompt personalizado da clínica + ferramentas de agendamento
+        system_completo = system_prompt + construir_contexto_temporal()
+        if clinica:
+            system_completo += _formatar_config_horarios_pro_prompt(clinica["id"])
+            system_completo += INSTRUCOES_AGENDAMENTO
+        ferramentas_disponiveis = FERRAMENTAS
+        executar_func = lambda nome, args: _executar_ferramenta(
+            nome, args, clinica, conversa_id, numero_lead
+        )
 
     headers = {
         "x-api-key": CLAUDE_API_KEY,
@@ -488,9 +804,7 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
     }
 
     agendamentos_criados = []
-    # Loop de tool use — Ana pode chamar ferramentas múltiplas vezes
-    # até dar a resposta final em texto.
-    for tentativa in range(5):  # limite de segurança
+    for tentativa in range(5):
         payload = {
             "model": CLAUDE_MODEL,
             "max_tokens": 1024,
@@ -498,9 +812,8 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
             "system": system_completo,
             "messages": messages,
         }
-        # Só habilita ferramentas se a clínica foi passada
-        if clinica and conversa_id and numero_lead:
-            payload["tools"] = FERRAMENTAS
+        if clinica:
+            payload["tools"] = ferramentas_disponiveis
 
         try:
             r = requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=45)
@@ -515,12 +828,9 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
         stop_reason = data.get("stop_reason")
         content = data.get("content", [])
 
-        # Se ela usou ferramenta(s), processa e continua o loop
         if stop_reason == "tool_use":
-            # Adiciona a resposta dela ao histórico
             messages.append({"role": "assistant", "content": content})
 
-            # Processa cada tool_use
             tool_results = []
             for bloco in content:
                 if bloco.get("type") != "tool_use":
@@ -528,10 +838,9 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
                 nome_tool = bloco["name"]
                 tool_id = bloco["id"]
                 args = bloco.get("input", {})
-                print(f"🔧 Ana chamou: {nome_tool}({args})")
-                resultado, extra = _executar_ferramenta(
-                    nome_tool, args, clinica, conversa_id, numero_lead
-                )
+                modo_label = "DONO" if modo_dono else "LEAD"
+                print(f"🔧 [{modo_label}] Ana chamou: {nome_tool}({args})")
+                resultado, extra = executar_func(nome_tool, args)
                 print(f"   → {resultado[:120]}")
                 if "agendamento_criado_id" in extra:
                     agendamentos_criados.append(extra)
@@ -541,16 +850,12 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
                     "content": resultado,
                 })
 
-            # Adiciona os resultados das ferramentas como mensagem do usuário
             messages.append({"role": "user", "content": tool_results})
-            # Continua o loop pra Ana gerar a resposta final
             continue
 
-        # Resposta final em texto
         textos = [b["text"] for b in content if b.get("type") == "text"]
         return ("\n".join(textos).strip(), agendamentos_criados)
 
-    # Se passou de 5 tentativas, algo deu errado
     print("⚠️ Loop de tool use excedeu 5 tentativas.")
     return None, agendamentos_criados
 
@@ -678,10 +983,26 @@ def processar_mensagem_em_background(
     então aqui podemos tomar nosso tempo: digitar, pensar, responder.
 
     Se vier áudio (audio_media_id), transcreve primeiro e usa o texto resultante.
+
+    Detecta se a mensagem é do DONO da clínica (telefone_humano) e usa
+    o modo apropriado (assistente executiva) em vez do modo lead.
     """
     try:
         # Token específico da clínica (ou None = usa o global como fallback).
         token_clinica = clinica.get("whatsapp_token")
+
+        # MODO DONO: verifica se o número que enviou é o telefone_humano dessa clínica
+        modo_dono = False
+        tel_humano = clinica.get("telefone_humano")
+        if tel_humano:
+            tel_humano_digitos = re.sub(r"\D", "", tel_humano)
+            numero_lead_digitos = re.sub(r"\D", "", numero_lead)
+            # Compara os 10 últimos dígitos (parte sem DDI)
+            if (tel_humano_digitos and numero_lead_digitos and
+                len(tel_humano_digitos) >= 10 and len(numero_lead_digitos) >= 10 and
+                tel_humano_digitos[-10:] == numero_lead_digitos[-10:]):
+                modo_dono = True
+                print(f"🔑 [{clinica['nome']}] MODO DONO ativado pra {numero_lead}")
 
         # 1) Mostra check azul + "digitando..." imediatamente
         marcar_como_lida_e_digitando(
@@ -707,31 +1028,30 @@ def processar_mensagem_em_background(
 
             print(f"   Transcrição: {texto_recebido}")
 
-        # 2) Salva a mensagem do lead no banco (texto, mesmo se veio de áudio).
+        # 2) Salva a mensagem (sempre, mesmo modo dono).
         salvar_mensagem(
             conversa_id, "user", texto_recebido,
             message_id_whatsapp=message_id_whatsapp
         )
 
-        # 2.5) Se um humano assumiu a conversa, a Ana NÃO responde.
-        # A mensagem fica salva pra ele ler no painel.
-        if conversa_esta_pausada(conversa_id):
+        # 2.5) Se humano assumiu a conversa, Ana fica calada.
+        # Mas isso NÃO se aplica no modo dono (dono falando direto sempre tem prioridade).
+        if not modo_dono and conversa_esta_pausada(conversa_id):
             print(f"⏸️  Conversa {conversa_id} pausada (humano assumiu) — Ana em silêncio.")
             return
 
         # 3) Carrega o histórico recente da conversa.
         historico = obter_historico_conversa(conversa_id, limite=20)
-        # A última mensagem do histórico É a que acabou de chegar.
-        # A função gerar_resposta_ia vai re-adicionar ela, então tiramos daqui.
         if historico and historico[-1]["role"] == "user":
             historico_base = historico[:-1]
         else:
             historico_base = historico
 
-        # 4) Gera resposta com Claude. Passa o contexto pra Ana poder agendar.
+        # 4) Gera resposta. Passa flag modo_dono.
         resposta_completa, agendamentos = gerar_resposta_ia(
             clinica["system_prompt"], historico_base, texto_recebido,
-            clinica=clinica, conversa_id=conversa_id, numero_lead=numero_lead
+            clinica=clinica, conversa_id=conversa_id, numero_lead=numero_lead,
+            modo_dono=modo_dono
         )
 
         if not resposta_completa:
@@ -744,7 +1064,7 @@ def processar_mensagem_em_background(
             )
             return
 
-        # 5) Salva a resposta da Ana inteira no banco (uma vez).
+        # 5) Salva a resposta da Ana inteira no banco.
         salvar_mensagem(conversa_id, "assistant", resposta_completa)
 
         # 6) Quebra em partes e envia cada uma com delay natural.
@@ -756,11 +1076,14 @@ def processar_mensagem_em_background(
                 token=token_clinica
             )
 
-        print(f"💬 [{clinica['nome']}] Ana respondeu em {len(partes)} parte(s) pra {numero_lead}")
+        modo_label = "DONO" if modo_dono else "LEAD"
+        print(f"💬 [{clinica['nome']}] [{modo_label}] Ana respondeu em {len(partes)} parte(s) pra {numero_lead}")
 
-        # 7) Se a Ana agendou algo nessa rodada, notifica o responsável da clínica.
-        for ag in agendamentos:
-            notificar_agendamento_para_responsavel(clinica, ag, numero_lead)
+        # 7) Se Ana agendou no modo lead, notifica o dono.
+        # No modo dono, NÃO notifica (o próprio dono fez a ação).
+        if not modo_dono:
+            for ag in agendamentos:
+                notificar_agendamento_para_responsavel(clinica, ag, numero_lead)
 
     except Exception as e:
         print(f"❌ Erro no processamento de background: {e}")
