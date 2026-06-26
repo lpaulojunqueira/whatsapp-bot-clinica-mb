@@ -1062,34 +1062,32 @@ def obter_horarios_disponiveis(clinica_id, data):
 
 
 def obter_horarios_disponiveis_intervalo(clinica_id, data_inicio, data_fim,
-                                          max_por_dia=6):
+                                          max_por_dia=None):
     """
-    Variante: retorna até N horários por dia num intervalo de datas.
-    Útil pra Ana propor opções pro lead ("tenho sexta às 10h, segunda às 14h...").
+    Retorna TODOS os horários disponíveis num intervalo de datas.
+    Se max_por_dia for definido, limita a quantidade por dia (espaçando).
+    Padrão: retorna tudo, deixa a Ana decidir o que mostrar.
     """
     resultado = []
     dia = data_inicio
     while dia <= data_fim:
         slots = obter_horarios_disponiveis(clinica_id, dia)
-        if slots:
-            if len(slots) <= max_por_dia:
-                resultado.extend(slots)
-            else:
-                # Pega N horários espaçados ao longo do dia.
-                # Garante incluir o primeiro e o último também.
-                indices = []
-                if max_por_dia >= 2:
-                    indices.append(0)
-                    indices.append(len(slots) - 1)
-                # Preenche os intermediários espaçando equilibrado
-                if max_por_dia > 2:
-                    passo = (len(slots) - 1) / (max_por_dia - 1)
-                    for i in range(1, max_por_dia - 1):
-                        idx = round(i * passo)
-                        if idx not in indices:
-                            indices.append(idx)
-                indices = sorted(set(indices))[:max_por_dia]
-                resultado.extend([slots[i] for i in indices])
+        if not slots:
+            dia = dia + timedelta(days=1)
+            continue
+        if max_por_dia is None or len(slots) <= max_por_dia:
+            resultado.extend(slots)
+        else:
+            # Se foi pedido limitar, espaça mantendo primeiro e último
+            indices = [0, len(slots) - 1]
+            if max_por_dia > 2:
+                passo = (len(slots) - 1) / (max_por_dia - 1)
+                for i in range(1, max_por_dia - 1):
+                    idx = round(i * passo)
+                    if idx not in indices:
+                        indices.append(idx)
+            indices = sorted(set(indices))[:max_por_dia]
+            resultado.extend([slots[i] for i in indices])
         dia = dia + timedelta(days=1)
     return resultado
 
