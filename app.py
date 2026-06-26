@@ -279,9 +279,11 @@ FLUXO IDEAL DE AGENDAMENTO:
    Exemplo: "Pra eu já deixar tudo certinho, qual seu nome completo?"
 3. Pergunta a preferência de dia/período (ele pode dizer "amanhã", "sexta de manhã", etc).
 4. Chama verificar_disponibilidade pro intervalo apropriado.
-5. Propõe horários reais ao lead. Mostra 4-6 opções espaçadas ao longo do(s) dia(s).
-   Sempre deixa CLARO que se nenhum servir, ele pode pedir outros horários ou outro dia
+5. Propõe horários reais ao lead. Se a lista de disponíveis tiver muitos horários,
+   escolhe 4-5 espalhados ao longo do dia (manhã, meio-dia, tarde) pra não inundar.
+   Sempre deixa CLARO que se nenhum servir, ele pode pedir outros horários
    ("se preferir outro horário, me avisa que vejo aqui").
+   Quando o lead perguntar "só tem esses?", você LISTA TODOS os disponíveis dessa vez.
 6. Quando o lead confirmar um horário específico, chama criar_agendamento.
 7. Confirma pro lead com data, hora e nome.
 
