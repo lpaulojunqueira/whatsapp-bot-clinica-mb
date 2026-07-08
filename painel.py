@@ -33,6 +33,11 @@ from db import (
     criar_usuario_clinica,
     obter_config_horarios,
     atualizar_config_horarios,
+    listar_agendamentos,
+    listar_bloqueios,
+    cancelar_agendamento,
+    remover_bloqueio,
+    obter_agendamento,
 )
 
 
@@ -550,6 +555,362 @@ PAINEL_HTML = """
     .placeholder-titulo { font-size: 15px; }
     .placeholder-sub { font-size: 13px; }
   }
+
+  /* ============================================================ */
+  /* ABAS PRINCIPAIS (Conversas / Agenda)                          */
+  /* ============================================================ */
+  .header-abas {
+    display: flex;
+    gap: 4px;
+    margin: 0 24px;
+    flex: 1;
+    max-width: 400px;
+  }
+  .aba-principal {
+    background: none;
+    border: none;
+    padding: 8px 16px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--cinza-texto);
+    cursor: pointer;
+    border-radius: 8px;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .aba-principal:hover {
+    background: rgba(31, 190, 130, 0.06);
+    color: var(--carvao);
+  }
+  .aba-principal.aba-ativa {
+    color: var(--verde-escuro);
+    background: rgba(31, 190, 130, 0.10);
+  }
+
+  @media (max-width: 768px) {
+    .header-abas { margin: 0 12px; max-width: none; gap: 2px; }
+    .aba-principal { padding: 6px 10px; font-size: 12px; }
+  }
+
+  /* ============================================================ */
+  /* AGENDA (view semanal tipo Google Calendar)                    */
+  /* ============================================================ */
+  .sidebar-agenda { padding-bottom: 20px; }
+
+  .agenda-nav {
+    display: flex;
+    gap: 6px;
+    padding: 12px 20px;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--cinza-borda);
+  }
+  .agenda-nav-btn {
+    background: #fff;
+    border: 1.5px solid var(--cinza-borda);
+    color: var(--carvao);
+    width: 34px; height: 34px;
+    border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .agenda-nav-btn:hover {
+    background: var(--cinza-bg);
+    border-color: var(--verde);
+  }
+  .agenda-hoje-btn {
+    background: var(--verde);
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    flex: 1;
+    max-width: 100px;
+    transition: background 0.15s;
+  }
+  .agenda-hoje-btn:hover { background: var(--verde-escuro); }
+
+  .agenda-legenda {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--cinza-borda);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .legenda-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--cinza-texto);
+  }
+  .legenda-cor {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    display: inline-block;
+    border: 1px solid rgba(0,0,0,0.08);
+  }
+  .cor-confirmado { background: var(--verde); }
+  .cor-bloqueio { background: #FCA5A5; }
+  .cor-livre { background: #F3F4F6; }
+  .cor-fora { background: #E5E7EB; opacity: 0.5; }
+
+  .agenda-resumo {
+    padding: 16px 20px;
+    font-size: 12px;
+    color: var(--cinza-texto);
+    line-height: 1.6;
+  }
+  .agenda-resumo strong {
+    color: var(--carvao);
+    font-size: 20px;
+    display: block;
+    line-height: 1.2;
+    margin-bottom: 2px;
+  }
+
+  .detalhe-agenda {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .agenda-topo {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--cinza-borda);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .agenda-titulo {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--carvao);
+  }
+
+  .agenda-container {
+    flex: 1;
+    overflow: auto;
+    background: #FAFBFC;
+    position: relative;
+  }
+  .agenda-vazio {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--cinza-texto);
+    padding: 40px;
+  }
+  .agenda-vazio-icone {
+    width: 80px; height: 80px;
+    background: var(--cinza-bg);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 16px;
+  }
+  .agenda-vazio-titulo { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .agenda-vazio-sub { font-size: 13px; }
+
+  .agenda-grid {
+    display: grid;
+    grid-template-columns: 60px repeat(7, 1fr);
+    min-width: 700px;
+  }
+  .agenda-cabecalho {
+    display: contents;
+  }
+  .agenda-cab-canto {
+    background: #fff;
+    border-bottom: 1px solid var(--cinza-borda);
+    border-right: 1px solid var(--cinza-borda);
+    position: sticky; top: 0; left: 0; z-index: 3;
+  }
+  .agenda-cab-dia {
+    background: #fff;
+    padding: 12px 8px;
+    text-align: center;
+    border-bottom: 1px solid var(--cinza-borda);
+    border-right: 1px solid var(--cinza-borda);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--cinza-texto);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    position: sticky; top: 0; z-index: 2;
+  }
+  .agenda-cab-dia .numero {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--carvao);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-top: 2px;
+  }
+  .agenda-cab-dia.hoje .numero {
+    background: var(--verde);
+    color: #fff;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .agenda-hora-label {
+    background: #fff;
+    padding: 4px 8px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--cinza-texto);
+    border-right: 1px solid var(--cinza-borda);
+    border-top: 1px solid #F0F0F0;
+    position: sticky; left: 0; z-index: 1;
+    line-height: 1;
+    padding-top: 6px;
+  }
+  .agenda-celula {
+    background: #fff;
+    border-top: 1px solid #F0F0F0;
+    border-right: 1px solid var(--cinza-borda);
+    min-height: 40px;
+    position: relative;
+    padding: 2px;
+  }
+  .agenda-celula.fora-expediente {
+    background: #F9FAFB;
+    background-image: repeating-linear-gradient(
+      45deg,
+      transparent, transparent 6px,
+      rgba(0,0,0,0.02) 6px, rgba(0,0,0,0.02) 12px
+    );
+  }
+
+  .agenda-bloco {
+    background: var(--verde);
+    color: #fff;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 11px;
+    line-height: 1.3;
+    cursor: pointer;
+    overflow: hidden;
+    position: absolute;
+    left: 2px; right: 2px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    transition: transform 0.1s, box-shadow 0.1s;
+    z-index: 2;
+  }
+  .agenda-bloco:hover {
+    transform: scale(1.02);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    z-index: 5;
+  }
+  .agenda-bloco .bloco-hora {
+    font-size: 10px;
+    opacity: 0.9;
+    font-weight: 600;
+  }
+  .agenda-bloco .bloco-nome {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agenda-bloco.bloco-bloqueio {
+    background: #FCA5A5;
+    color: #7F1D1D;
+  }
+  .agenda-bloco.bloco-manual {
+    background: #3B82F6;
+  }
+
+  /* Modal */
+  .agenda-modal {
+    position: fixed; top:0; left:0; right:0; bottom:0;
+    background: rgba(0,0,0,0.5);
+    z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .agenda-modal-conteudo {
+    background: #fff;
+    border-radius: 12px;
+    width: 100%; max-width: 420px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+  }
+  .agenda-modal-topo {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--cinza-borda);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .agenda-modal-titulo { font-size: 16px; font-weight: 600; }
+  .agenda-modal-fechar {
+    background: none; border: none; font-size: 26px; color: var(--cinza-texto);
+    cursor: pointer; padding: 0; line-height: 1; width: 30px; height: 30px;
+  }
+  .agenda-modal-body { padding: 20px; font-size: 14px; line-height: 1.6; }
+  .agenda-modal-body .linha { display: flex; margin-bottom: 10px; }
+  .agenda-modal-body .rotulo {
+    color: var(--cinza-texto); width: 90px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .agenda-modal-body .valor { color: var(--carvao); flex: 1; }
+  .agenda-modal-rodape {
+    padding: 14px 20px; border-top: 1px solid var(--cinza-borda);
+    display: flex; gap: 10px; justify-content: flex-end;
+  }
+  .btn-perigo {
+    background: #DC2626; color: #fff; border: none;
+    padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn-perigo:hover { background: #B91C1C; }
+
+  /* ============================================================ */
+  /* DATA/HORA nas mensagens do painel de conversas                */
+  /* ============================================================ */
+  .msg-wrapper {
+    display: flex;
+    flex-direction: column;
+  }
+  .msg-wrapper.wrap-lead { align-items: flex-start; }
+  .msg-wrapper.wrap-ana { align-items: flex-end; }
+  .msg-hora {
+    font-size: 10px;
+    color: var(--cinza-texto);
+    margin: 2px 8px 4px;
+    opacity: 0.75;
+  }
+  .separador-dia {
+    align-self: center;
+    background: rgba(0,0,0,0.05);
+    color: var(--cinza-texto);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 12px;
+    margin: 16px 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  @media (max-width: 768px) {
+    .agenda-grid { min-width: 640px; grid-template-columns: 48px repeat(7, 1fr); }
+    .agenda-cab-dia { padding: 8px 4px; font-size: 10px; }
+    .agenda-cab-dia .numero { font-size: 16px; }
+    .agenda-cab-dia.hoje .numero { width: 24px; height: 24px; font-size: 12px; }
+    .agenda-hora-label { font-size: 9px; padding: 4px 4px 0; }
+    .agenda-celula { min-height: 32px; }
+    .agenda-bloco { font-size: 10px; padding: 2px 4px; }
+    .agenda-bloco .bloco-hora { font-size: 9px; }
+  }
 </style>
 </head>
 <body>
@@ -559,6 +920,12 @@ PAINEL_HTML = """
     <div class="header-logo">
       <img src="/static/logo-converte.png" alt="Converte.ai">
     </div>
+    <nav class="header-abas">
+      <button type="button" class="aba-principal aba-ativa" data-view="conversas"
+              onclick="trocarView('conversas')">Conversas</button>
+      <button type="button" class="aba-principal" data-view="agenda"
+              onclick="trocarView('agenda')">Agenda</button>
+    </nav>
     <div class="header-user">
       <div class="user-info">
         <div class="nome">{{ nome }}</div>
@@ -570,7 +937,7 @@ PAINEL_HTML = """
     </div>
   </header>
 
-  <div class="main">
+  <div class="main view-conversas" id="view-conversas">
     <aside class="sidebar">
       <div class="sidebar-top">
         <div class="label">{{ "Filtrar por" if eh_admin else "Atendimento de" }}</div>
@@ -630,6 +997,81 @@ PAINEL_HTML = """
         <button class="btn btn-primario" type="submit">Enviar</button>
       </form>
     </main>
+  </div>
+
+  <!-- =========================== VIEW: AGENDA =========================== -->
+  <div class="main view-agenda" id="view-agenda" style="display:none">
+    <aside class="sidebar sidebar-agenda">
+      <div class="sidebar-top">
+        <div class="label">{{ "Filtrar por" if eh_admin else "Agenda de" }}</div>
+        {% if eh_admin %}
+          <select id="agenda-cliente" onchange="agendaTrocarCliente()"
+                  style="width:100%; padding:8px 10px; margin-top:6px;
+                         border:1.5px solid var(--cinza-borda); border-radius:8px;
+                         font-family:inherit; font-size:14px; font-weight:600;
+                         color:var(--carvao); background:#fff; cursor:pointer;">
+            <option value="">Selecione um cliente</option>
+          </select>
+        {% else %}
+          <div class="clinica-nome">{{ contexto }}</div>
+        {% endif %}
+      </div>
+
+      <div class="agenda-nav">
+        <button type="button" class="agenda-nav-btn" onclick="agendaSemanaAnt()" aria-label="Semana anterior">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+               stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        <button type="button" class="agenda-hoje-btn" onclick="agendaIrHoje()">Hoje</button>
+        <button type="button" class="agenda-nav-btn" onclick="agendaSemanaProx()" aria-label="Próxima semana">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+               stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </button>
+      </div>
+
+      <div class="agenda-legenda">
+        <div class="legenda-item"><span class="legenda-cor cor-confirmado"></span> Agendamento</div>
+        <div class="legenda-item"><span class="legenda-cor cor-bloqueio"></span> Bloqueio</div>
+        <div class="legenda-item"><span class="legenda-cor cor-livre"></span> Livre</div>
+        <div class="legenda-item"><span class="legenda-cor cor-fora"></span> Fora do expediente</div>
+      </div>
+
+      <div class="agenda-resumo" id="agenda-resumo"></div>
+    </aside>
+
+    <main class="detalhe detalhe-agenda">
+      <div class="agenda-topo">
+        <div class="agenda-titulo" id="agenda-titulo">Selecione um cliente pra ver a agenda</div>
+      </div>
+      <div class="agenda-container" id="agenda-container">
+        <div class="agenda-vazio" id="agenda-vazio">
+          <div class="agenda-vazio-icone">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+          </div>
+          <div class="agenda-vazio-titulo">Nenhuma agenda carregada</div>
+          <div class="agenda-vazio-sub">Escolha um cliente pra visualizar a semana</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal de detalhe do agendamento/bloqueio -->
+  <div id="agenda-modal" class="agenda-modal" style="display:none">
+    <div class="agenda-modal-conteudo">
+      <div class="agenda-modal-topo">
+        <div class="agenda-modal-titulo" id="ag-modal-titulo">Detalhes</div>
+        <button type="button" class="agenda-modal-fechar" onclick="fecharModalAgenda()"
+                aria-label="Fechar">×</button>
+      </div>
+      <div class="agenda-modal-body" id="ag-modal-body"></div>
+      <div class="agenda-modal-rodape" id="ag-modal-rodape"></div>
+    </div>
   </div>
 </div>
 
@@ -781,17 +1223,64 @@ async function abrirConversa(id) {
   const estavaNoFim = !ehMesmaConversa ||
     (ms.scrollHeight - ms.scrollTop - ms.clientHeight < 80);
 
-  ms.innerHTML = data.mensagens.map(m => `
-    <div class="msg ${m.role === 'user' ? 'msg-lead' : 'msg-ana'}">
-      ${escapar(m.conteudo)}
-    </div>
-  `).join('');
+  ms.innerHTML = renderizarMensagensComData(data.mensagens);
 
   if (estavaNoFim) {
     ms.scrollTop = ms.scrollHeight;
   }
 
   carregarConversas();
+}
+
+function renderizarMensagensComData(mensagens) {
+  const hoje = new Date();
+  const ontem = new Date(hoje); ontem.setDate(ontem.getDate() - 1);
+  const chaveDia = d => d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+  const chaveHoje = chaveDia(hoje);
+  const chaveOntem = chaveDia(ontem);
+  const nomesDias = ['domingo','segunda-feira','terça-feira','quarta-feira',
+                     'quinta-feira','sexta-feira','sábado'];
+  const nomesMeses = ['janeiro','fevereiro','março','abril','maio','junho',
+                      'julho','agosto','setembro','outubro','novembro','dezembro'];
+
+  let ultimaChave = null;
+  const partes = [];
+
+  for (const m of mensagens) {
+    if (!m.criada_em) continue;
+    const dt = new Date(m.criada_em);
+    const chave = chaveDia(dt);
+
+    if (chave !== ultimaChave) {
+      let rotulo;
+      if (chave === chaveHoje) rotulo = 'hoje';
+      else if (chave === chaveOntem) rotulo = 'ontem';
+      else {
+        const semanaAtras = new Date(hoje); semanaAtras.setDate(semanaAtras.getDate() - 7);
+        if (dt >= semanaAtras) {
+          rotulo = nomesDias[dt.getDay()];
+        } else {
+          rotulo = dt.getDate() + ' de ' + nomesMeses[dt.getMonth()];
+          if (dt.getFullYear() !== hoje.getFullYear()) {
+            rotulo += ' de ' + dt.getFullYear();
+          }
+        }
+      }
+      partes.push(`<div class="separador-dia">${rotulo}</div>`);
+      ultimaChave = chave;
+    }
+
+    const hh = String(dt.getHours()).padStart(2,'0');
+    const mm = String(dt.getMinutes()).padStart(2,'0');
+    const eLead = m.role === 'user';
+    partes.push(`
+      <div class="msg-wrapper wrap-${eLead ? 'lead' : 'ana'}">
+        <div class="msg ${eLead ? 'msg-lead' : 'msg-ana'}">${escapar(m.conteudo)}</div>
+        <div class="msg-hora">${hh}:${mm}</div>
+      </div>
+    `);
+  }
+  return partes.join('');
 }
 
 function voltarParaLista() {
@@ -831,6 +1320,384 @@ function escapar(s) {
   return (s || '').toString()
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/\\n/g,'<br>');
+}
+
+// ============================================================
+// NAVEGAÇÃO DE VIEWS (Conversas / Agenda)
+// ============================================================
+let viewAtual = 'conversas';
+
+function trocarView(nome) {
+  viewAtual = nome;
+  document.querySelectorAll('.aba-principal').forEach(b => {
+    b.classList.toggle('aba-ativa', b.dataset.view === nome);
+  });
+  document.getElementById('view-conversas').style.display =
+    (nome === 'conversas') ? '' : 'none';
+  document.getElementById('view-agenda').style.display =
+    (nome === 'agenda') ? '' : 'none';
+
+  if (nome === 'agenda') {
+    inicializarAgendaSePreciso();
+  }
+}
+
+// ============================================================
+// AGENDA (view semanal)
+// ============================================================
+let agendaClinicaId = null;   // clínica selecionada (null = nenhuma)
+let agendaSemanaInicio = null; // Date do domingo da semana atual
+let agendaConfig = null;
+let agendaDados = null;
+let agendaInicializada = false;
+
+function inicializarAgendaSePreciso() {
+  if (agendaInicializada) return;
+  agendaInicializada = true;
+
+  // Define semana atual (começa no domingo)
+  agendaSemanaInicio = comecoDaSemana(new Date());
+
+  // Popula dropdown de cliente pro admin
+  const selAg = document.getElementById('agenda-cliente');
+  if (selAg) {
+    // Reutiliza a mesma lista de clientes do filtro de conversas
+    fetch('/painel/admin/usuarios').then(r => r.ok ? r.json() : []).then(cs => {
+      selAg.innerHTML = '<option value="">Selecione um cliente</option>' +
+        cs.map(c => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
+    }).catch(() => {});
+  } else {
+    // Cliente logado (não-admin): já sabe qual clínica é
+    agendaClinicaId = 'meu';  // marca especial — backend usa a clínica da sessão
+    carregarAgenda();
+  }
+}
+
+function agendaTrocarCliente() {
+  const sel = document.getElementById('agenda-cliente');
+  const v = sel.value;
+  agendaClinicaId = v ? parseInt(v, 10) : null;
+  if (agendaClinicaId) carregarAgenda();
+  else limparAgenda();
+}
+
+function comecoDaSemana(d) {
+  // Semana começa no domingo (0). Retorna Date às 00:00 do domingo.
+  const dt = new Date(d);
+  const diaSemana = dt.getDay();
+  dt.setDate(dt.getDate() - diaSemana);
+  dt.setHours(0, 0, 0, 0);
+  return dt;
+}
+
+function agendaSemanaAnt() {
+  if (!agendaSemanaInicio) return;
+  agendaSemanaInicio.setDate(agendaSemanaInicio.getDate() - 7);
+  if (agendaClinicaId) carregarAgenda();
+}
+function agendaSemanaProx() {
+  if (!agendaSemanaInicio) return;
+  agendaSemanaInicio.setDate(agendaSemanaInicio.getDate() + 7);
+  if (agendaClinicaId) carregarAgenda();
+}
+function agendaIrHoje() {
+  agendaSemanaInicio = comecoDaSemana(new Date());
+  if (agendaClinicaId) carregarAgenda();
+}
+
+function limparAgenda() {
+  document.getElementById('agenda-container').innerHTML = `
+    <div class="agenda-vazio">
+      <div class="agenda-vazio-icone">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="16" y1="2" x2="16" y2="6"></line>
+          <line x1="8" y1="2" x2="8" y2="6"></line>
+          <line x1="3" y1="10" x2="21" y2="10"></line>
+        </svg>
+      </div>
+      <div class="agenda-vazio-titulo">Nenhuma agenda carregada</div>
+      <div class="agenda-vazio-sub">Escolha um cliente pra visualizar a semana</div>
+    </div>`;
+  document.getElementById('agenda-titulo').textContent = 'Selecione um cliente pra ver a agenda';
+  document.getElementById('agenda-resumo').innerHTML = '';
+}
+
+function iso(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+async function carregarAgenda() {
+  if (!agendaClinicaId || !agendaSemanaInicio) return;
+  const semanaFim = new Date(agendaSemanaInicio);
+  semanaFim.setDate(semanaFim.getDate() + 7);
+
+  const params = new URLSearchParams({
+    inicio: iso(agendaSemanaInicio),
+    fim: iso(semanaFim)
+  });
+  if (agendaClinicaId !== 'meu') params.set('clinica_id', agendaClinicaId);
+
+  document.getElementById('agenda-container').innerHTML =
+    '<div class="agenda-vazio"><div class="agenda-vazio-sub">Carregando agenda...</div></div>';
+
+  try {
+    const r = await fetch('/painel/api/agenda?' + params);
+    if (!r.ok) throw new Error('Falha ao carregar');
+    agendaDados = await r.json();
+    agendaConfig = agendaDados.config;
+    renderizarAgenda();
+  } catch (e) {
+    document.getElementById('agenda-container').innerHTML =
+      '<div class="agenda-vazio"><div class="agenda-vazio-titulo">Erro ao carregar agenda</div><div class="agenda-vazio-sub">Tenta atualizar a página.</div></div>';
+  }
+}
+
+function renderizarAgenda() {
+  if (!agendaDados) return;
+
+  const cfg = agendaConfig;
+  const horaAbre = parseInt(cfg.hora_inicio.split(':')[0], 10);
+  const horaFecha = parseInt(cfg.hora_fim.split(':')[0], 10);
+  // Mostra 1h antes/depois pra dar contexto visual
+  const horaGridInicio = Math.max(0, horaAbre - 1);
+  const horaGridFim = Math.min(24, horaFecha + 1);
+
+  const diasSemanaCfg = new Set(cfg.dias_semana.split(',').map(s => parseInt(s.trim(), 10)));
+  // db usa 1=segunda ... 7=domingo. JS usa 0=domingo ... 6=sábado.
+  const jsParaDb = jsDia => jsDia === 0 ? 7 : jsDia;
+
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const nomesDiasCurtos = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB'];
+
+  // Título da semana
+  const fimSemana = new Date(agendaSemanaInicio);
+  fimSemana.setDate(fimSemana.getDate() + 6);
+  const nomesMeses = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+  let titulo;
+  if (agendaSemanaInicio.getMonth() === fimSemana.getMonth()) {
+    titulo = `${agendaSemanaInicio.getDate()} – ${fimSemana.getDate()} de ${nomesMeses[agendaSemanaInicio.getMonth()]} ${fimSemana.getFullYear()}`;
+  } else {
+    titulo = `${agendaSemanaInicio.getDate()} ${nomesMeses[agendaSemanaInicio.getMonth()]} – ${fimSemana.getDate()} ${nomesMeses[fimSemana.getMonth()]} ${fimSemana.getFullYear()}`;
+  }
+  document.getElementById('agenda-titulo').textContent = titulo;
+
+  // Constrói HTML do grid
+  let html = '<div class="agenda-grid">';
+  // Cabeçalho: canto + 7 dias
+  html += '<div class="agenda-cab-canto"></div>';
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(agendaSemanaInicio);
+    d.setDate(d.getDate() + i);
+    const ehHoje = d.getTime() === hoje.getTime();
+    html += `<div class="agenda-cab-dia ${ehHoje ? 'hoje' : ''}">
+      ${nomesDiasCurtos[d.getDay()]}
+      <div class="numero">${d.getDate()}</div>
+    </div>`;
+  }
+
+  // Linhas: hora + 7 células
+  for (let h = horaGridInicio; h < horaGridFim; h++) {
+    html += `<div class="agenda-hora-label">${String(h).padStart(2,'0')}:00</div>`;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(agendaSemanaInicio);
+      d.setDate(d.getDate() + i);
+      const diaDb = jsParaDb(d.getDay());
+      const eForaDia = !diasSemanaCfg.has(diaDb);
+      const eForaHora = (h < horaAbre) || (h >= horaFecha);
+      const foraExpediente = eForaDia || eForaHora;
+      html += `<div class="agenda-celula ${foraExpediente ? 'fora-expediente' : ''}"
+                    data-dia="${iso(d)}" data-hora="${h}"></div>`;
+    }
+  }
+  html += '</div>';
+
+  document.getElementById('agenda-container').innerHTML = html;
+
+  // Coloca os blocos de agendamento
+  colocarBlocosAgenda(horaGridInicio);
+
+  // Atualiza resumo
+  atualizarResumoAgenda();
+
+  // Scroll pro horário de abertura
+  const container = document.getElementById('agenda-container');
+  const alturaLinha = 40;
+  container.scrollTop = (horaAbre - horaGridInicio) * alturaLinha - 20;
+}
+
+function colocarBlocosAgenda(horaGridInicio) {
+  const ags = agendaDados.agendamentos || [];
+  const blqs = agendaDados.bloqueios || [];
+
+  const alturaLinha = 40; // altura de 1h em px
+
+  const posicionar = (dt_inicio, duracao_min, colunaDia) => {
+    const inicio = new Date(dt_inicio);
+    const horaFrac = inicio.getHours() + inicio.getMinutes() / 60;
+    const top = (horaFrac - horaGridInicio) * alturaLinha;
+    const altura = Math.max(20, (duracao_min / 60) * alturaLinha - 2);
+    return { top, altura, colunaDia };
+  };
+
+  const colDoDia = (dtStr) => {
+    // dtStr é ISO com offset. Extraímos ano/mes/dia usando construção de Date
+    const d = new Date(dtStr);
+    const semanaInicioLocal = new Date(agendaSemanaInicio);
+    const dif = Math.floor((d - semanaInicioLocal) / 86400000);
+    return dif;
+  };
+
+  ags.forEach(a => {
+    const col = colDoDia(a.data_hora);
+    if (col < 0 || col > 6) return;
+    const pos = posicionar(a.data_hora, a.duracao_minutos || 60, col);
+    const classe = a.origem === 'manual' ? 'bloco-manual' : '';
+    const dt = new Date(a.data_hora);
+    const hh = String(dt.getHours()).padStart(2,'0');
+    const mm = String(dt.getMinutes()).padStart(2,'0');
+    const celula = document.querySelector(
+      `.agenda-celula[data-dia="${iso(agendaVirarDia(col))}"][data-hora="${dt.getHours()}"]`
+    );
+    if (!celula) return;
+    const bloco = document.createElement('div');
+    bloco.className = `agenda-bloco ${classe}`;
+    const offsetMin = dt.getMinutes();
+    const offsetTop = (offsetMin / 60) * alturaLinha;
+    bloco.style.top = offsetTop + 'px';
+    bloco.style.height = pos.altura + 'px';
+    bloco.innerHTML = `
+      <div class="bloco-hora">${hh}:${mm}</div>
+      <div class="bloco-nome">${escapar(a.nome_lead || 'Sem nome')}</div>
+    `;
+    bloco.onclick = () => abrirDetalheAgendamento(a);
+    celula.appendChild(bloco);
+  });
+
+  blqs.forEach(b => {
+    const dtIni = new Date(b.inicio);
+    const dtFim = new Date(b.fim);
+    const col = colDoDia(b.inicio);
+    if (col < 0 || col > 6) return;
+    const duracaoMin = (dtFim - dtIni) / 60000;
+    const pos = posicionar(b.inicio, duracaoMin, col);
+    const hh = String(dtIni.getHours()).padStart(2,'0');
+    const mm = String(dtIni.getMinutes()).padStart(2,'0');
+    const celula = document.querySelector(
+      `.agenda-celula[data-dia="${iso(agendaVirarDia(col))}"][data-hora="${dtIni.getHours()}"]`
+    );
+    if (!celula) return;
+    const bloco = document.createElement('div');
+    bloco.className = 'agenda-bloco bloco-bloqueio';
+    const offsetMin = dtIni.getMinutes();
+    const offsetTop = (offsetMin / 60) * alturaLinha;
+    bloco.style.top = offsetTop + 'px';
+    bloco.style.height = pos.altura + 'px';
+    bloco.innerHTML = `
+      <div class="bloco-hora">${hh}:${mm}</div>
+      <div class="bloco-nome">${escapar(b.motivo || 'Bloqueado')}</div>
+    `;
+    bloco.onclick = () => abrirDetalheBloqueio(b);
+    celula.appendChild(bloco);
+  });
+}
+
+function agendaVirarDia(coluna) {
+  const d = new Date(agendaSemanaInicio);
+  d.setDate(d.getDate() + coluna);
+  return d;
+}
+
+function atualizarResumoAgenda() {
+  const ags = agendaDados.agendamentos || [];
+  const blqs = agendaDados.bloqueios || [];
+  const html = `
+    <div style="margin-bottom:14px">
+      <strong>${ags.length}</strong>
+      ${ags.length === 1 ? 'agendamento' : 'agendamentos'} na semana
+    </div>
+    <div>
+      <strong>${blqs.length}</strong>
+      ${blqs.length === 1 ? 'bloqueio' : 'bloqueios'} na semana
+    </div>
+  `;
+  document.getElementById('agenda-resumo').innerHTML = html;
+}
+
+function fmtDataHora(dtStr) {
+  const d = new Date(dtStr);
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const yy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2,'0');
+  const min = String(d.getMinutes()).padStart(2,'0');
+  return `${dd}/${mm}/${yy} às ${hh}:${min}`;
+}
+
+function abrirDetalheAgendamento(ag) {
+  document.getElementById('ag-modal-titulo').textContent = 'Agendamento';
+  const origemLabel = ag.origem === 'manual' ? 'Manual' : 'Ana';
+  document.getElementById('ag-modal-body').innerHTML = `
+    <div class="linha"><div class="rotulo">Nome</div><div class="valor">${escapar(ag.nome_lead || '—')}</div></div>
+    <div class="linha"><div class="rotulo">Telefone</div><div class="valor">${escapar(ag.numero_lead || '—')}</div></div>
+    <div class="linha"><div class="rotulo">Data</div><div class="valor">${fmtDataHora(ag.data_hora)}</div></div>
+    <div class="linha"><div class="rotulo">Duração</div><div class="valor">${ag.duracao_minutos || 60} min</div></div>
+    <div class="linha"><div class="rotulo">Origem</div><div class="valor">${origemLabel}</div></div>
+    ${ag.observacao ? `<div class="linha"><div class="rotulo">Obs.</div><div class="valor">${escapar(ag.observacao)}</div></div>` : ''}
+  `;
+  document.getElementById('ag-modal-rodape').innerHTML = `
+    <button type="button" class="btn btn-pequeno" onclick="fecharModalAgenda()">Fechar</button>
+    <button type="button" class="btn-perigo" onclick="cancelarAgendamentoAgenda(${ag.id})">Cancelar agendamento</button>
+  `;
+  document.getElementById('agenda-modal').style.display = 'flex';
+}
+
+function abrirDetalheBloqueio(b) {
+  document.getElementById('ag-modal-titulo').textContent = 'Bloqueio';
+  const dtIni = new Date(b.inicio);
+  const dtFim = new Date(b.fim);
+  document.getElementById('ag-modal-body').innerHTML = `
+    <div class="linha"><div class="rotulo">Motivo</div><div class="valor">${escapar(b.motivo || '—')}</div></div>
+    <div class="linha"><div class="rotulo">Início</div><div class="valor">${fmtDataHora(b.inicio)}</div></div>
+    <div class="linha"><div class="rotulo">Fim</div><div class="valor">${fmtDataHora(b.fim)}</div></div>
+    <div class="linha"><div class="rotulo">Duração</div><div class="valor">${Math.round((dtFim-dtIni)/60000)} min</div></div>
+  `;
+  document.getElementById('ag-modal-rodape').innerHTML = `
+    <button type="button" class="btn btn-pequeno" onclick="fecharModalAgenda()">Fechar</button>
+    <button type="button" class="btn-perigo" onclick="removerBloqueioAgenda(${b.id})">Remover bloqueio</button>
+  `;
+  document.getElementById('agenda-modal').style.display = 'flex';
+}
+
+function fecharModalAgenda() {
+  document.getElementById('agenda-modal').style.display = 'none';
+}
+
+async function cancelarAgendamentoAgenda(id) {
+  if (!confirm('Confirma o cancelamento desse agendamento?')) return;
+  const r = await fetch('/painel/api/agendamentos/' + id + '/cancelar', { method: 'POST' });
+  if (r.ok) {
+    fecharModalAgenda();
+    carregarAgenda();
+  } else {
+    alert('Erro ao cancelar');
+  }
+}
+
+async function removerBloqueioAgenda(id) {
+  if (!confirm('Confirma a remoção desse bloqueio?')) return;
+  const r = await fetch('/painel/api/bloqueios/' + id, { method: 'DELETE' });
+  if (r.ok) {
+    fecharModalAgenda();
+    carregarAgenda();
+  } else {
+    alert('Erro ao remover bloqueio');
+  }
 }
 
 carregarClientesNoFiltro();
@@ -1928,3 +2795,114 @@ def registrar_rotas(app):
             return jsonify({"ok": True})
         except Exception as e:
             return jsonify({"erro": str(e)}), 400
+
+    # ============================================================
+    # AGENDA (view semanal no painel)
+    # ============================================================
+    @app.route("/painel/api/agenda", methods=["GET"])
+    @login_required
+    def api_agenda():
+        """
+        Retorna agendamentos + bloqueios + config de horários
+        do intervalo pedido (query params: inicio, fim em YYYY-MM-DD).
+        Admin passa clinica_id na query. Cliente comum usa a da sessão.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # Descobre a clínica alvo
+        clinica_sessao = session.get("clinica_id")
+        clinica_query = request.args.get("clinica_id")
+        if clinica_sessao is not None:
+            # cliente comum: força a própria clínica
+            clinica_id = clinica_sessao
+        else:
+            # admin: precisa passar clinica_id
+            if not clinica_query or not clinica_query.isdigit():
+                return jsonify({"erro": "clinica_id obrigatório pra admin"}), 400
+            clinica_id = int(clinica_query)
+
+        # Datas
+        try:
+            data_inicio_str = request.args.get("inicio")
+            data_fim_str = request.args.get("fim")
+            tz = timezone(timedelta(hours=-3))  # Brasília
+            data_inicio = datetime.strptime(data_inicio_str, "%Y-%m-%d").replace(tzinfo=tz)
+            data_fim = datetime.strptime(data_fim_str, "%Y-%m-%d").replace(tzinfo=tz)
+        except Exception:
+            return jsonify({"erro": "datas inválidas (use YYYY-MM-DD)"}), 400
+
+        if (data_fim - data_inicio).days > 60:
+            return jsonify({"erro": "intervalo muito longo"}), 400
+
+        # Config de horários
+        cfg = obter_config_horarios(clinica_id)
+        # Serializa campos time/date
+        for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim"):
+            if cfg.get(campo) is not None:
+                cfg[campo] = cfg[campo].strftime("%H:%M:%S")
+        if cfg.get("atualizada_em"):
+            cfg["atualizada_em"] = cfg["atualizada_em"].isoformat()
+
+        # Agendamentos
+        ags = listar_agendamentos(clinica_id, data_inicio, data_fim)
+        for a in ags:
+            if a.get("data_hora"):
+                a["data_hora"] = a["data_hora"].isoformat()
+            if a.get("criado_em"):
+                a["criado_em"] = a["criado_em"].isoformat()
+
+        # Bloqueios
+        blqs = listar_bloqueios(clinica_id, data_inicio, data_fim)
+        for b in blqs:
+            if b.get("inicio"):
+                b["inicio"] = b["inicio"].isoformat()
+            if b.get("fim"):
+                b["fim"] = b["fim"].isoformat()
+            if b.get("criado_em"):
+                b["criado_em"] = b["criado_em"].isoformat()
+
+        return jsonify({
+            "config": cfg,
+            "agendamentos": ags,
+            "bloqueios": blqs,
+        })
+
+    @app.route("/painel/api/agendamentos/<int:agendamento_id>/cancelar",
+               methods=["POST"])
+    @login_required
+    def api_cancelar_agendamento(agendamento_id):
+        """Cancela agendamento (apenas o dono da clínica ou admin)."""
+        ag = obter_agendamento(agendamento_id)
+        if not ag:
+            return jsonify({"erro": "agendamento não encontrado"}), 404
+
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None and ag["clinica_id"] != clinica_sessao:
+            return jsonify({"erro": "sem permissão"}), 403
+
+        ok = cancelar_agendamento(agendamento_id)
+        return jsonify({"ok": ok})
+
+    @app.route("/painel/api/bloqueios/<int:bloqueio_id>",
+               methods=["DELETE"])
+    @login_required
+    def api_remover_bloqueio(bloqueio_id):
+        """Remove bloqueio (apenas o dono da clínica ou admin)."""
+        # Não temos obter_bloqueio, então validamos via listar_bloqueios
+        # com filtro amplo. Como bloqueio_id é global, precisamos garantir
+        # que pertence à clínica do usuário.
+        clinica_sessao = session.get("clinica_id")
+
+        if clinica_sessao is not None:
+            # Cliente comum: verifica se o bloqueio é da sua clínica
+            from datetime import datetime, timezone, timedelta
+            tz = timezone(timedelta(hours=-3))
+            # Range grande pra pegar qualquer bloqueio ativo
+            ini = datetime(2020, 1, 1, tzinfo=tz)
+            fim = datetime(2100, 1, 1, tzinfo=tz)
+            blqs = listar_bloqueios(clinica_sessao, ini, fim)
+            if not any(b["id"] == bloqueio_id for b in blqs):
+                return jsonify({"erro": "sem permissão ou bloqueio inexistente"}), 403
+
+        ok = remover_bloqueio(bloqueio_id)
+        return jsonify({"ok": ok})
