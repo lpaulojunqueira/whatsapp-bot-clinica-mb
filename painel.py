@@ -910,6 +910,42 @@ PAINEL_HTML = """
     .agenda-celula { min-height: 32px; }
     .agenda-bloco { font-size: 10px; padding: 2px 4px; }
     .agenda-bloco .bloco-hora { font-size: 9px; }
+
+    /* MOBILE — agenda usa layout EMPILHADO (não sidebar-OU-detalhe como conversas) */
+    .view-agenda {
+      flex-direction: column;
+    }
+    .view-agenda .sidebar-agenda {
+      width: 100% !important;
+      border-right: none;
+      border-bottom: 1px solid var(--cinza-borda);
+      display: block !important;    /* sobrescreve display:none do estado conversa-aberta */
+      position: static !important;
+      height: auto;
+    }
+    .view-agenda .detalhe-agenda {
+      display: flex !important;      /* sobrescreve display:none padrão de .detalhe mobile */
+      position: static !important;
+      top: auto; left: auto; right: auto; bottom: auto;
+      min-height: 60vh;
+      z-index: auto;
+    }
+
+    /* Sidebar da agenda no mobile: layout mais compacto */
+    .sidebar-agenda .sidebar-top { padding: 12px 14px 8px; }
+    .agenda-nav { padding: 8px 14px; }
+    .agenda-legenda {
+      padding: 10px 14px;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .agenda-resumo { padding: 10px 14px; display: flex; gap: 20px; }
+    .agenda-resumo > div { margin-bottom: 0 !important; }
+    .agenda-resumo strong { font-size: 16px; display: inline; margin-right: 4px; }
+
+    .agenda-topo { padding: 12px 14px; }
+    .agenda-titulo { font-size: 14px; }
   }
 </style>
 </head>
@@ -1337,7 +1373,10 @@ function trocarView(nome) {
   document.getElementById('view-agenda').style.display =
     (nome === 'agenda') ? '' : 'none';
 
+  // Limpa classes de estado da outra view pra não contaminar o layout mobile
   if (nome === 'agenda') {
+    // Trocando pra agenda: se estava com conversa aberta, sai desse estado
+    document.body.classList.remove('conversa-aberta');
     inicializarAgendaSePreciso();
   }
 }
