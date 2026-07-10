@@ -145,6 +145,7 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
     data_hora = agendamento_info["agendamento_data_hora"]
     nome_paciente = agendamento_info["agendamento_nome"]
     ag_id = agendamento_info["agendamento_criado_id"]
+    motivo = agendamento_info.get("agendamento_observacao") or "não informado"
 
     data_fmt = _formatar_data_extensa(data_hora)
     hora_fmt = data_hora.strftime("%H:%M")
@@ -154,7 +155,8 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
         f"*Paciente:* {nome_paciente}\n"
         f"*Telefone:* {numero_lead}\n"
         f"*Data:* {data_fmt}\n"
-        f"*Horário:* {hora_fmt}\n\n"
+        f"*Horário:* {hora_fmt}\n"
+        f"*Motivo:* {motivo}\n\n"
         f"_Ver detalhes e gerenciar no painel Converte.ai_"
     )
 
@@ -287,6 +289,19 @@ FLUXO IDEAL DE AGENDAMENTO:
 6. Quando o lead confirmar um horário específico, chama criar_agendamento.
 7. Confirma pro lead com data, hora e nome.
 
+MOTIVO/TRATAMENTO DO AGENDAMENTO:
+- Antes de chamar criar_agendamento, releia a conversa: é muito provável que o lead já
+  tenha dito em algum momento qual tratamento busca (ex: avaliação, clareamento,
+  harmonização, implante, etc), mesmo sem você perguntar diretamente.
+- Se o motivo já apareceu em qualquer ponto da conversa, USE ESSE MOTIVO no campo
+  `observacao` da ferramenta. NÃO pergunte de novo — perguntar algo que o lead já
+  disse soa como se você não tivesse prestado atenção.
+- Só pergunte o motivo diretamente, de forma natural, se ele REALMENTE nunca apareceu
+  em nenhuma mensagem anterior. Exemplo: "Só pra eu já deixar registrado, é pra qual
+  tratamento?"
+- Preencha `observacao` de forma curta (ex: "Interesse em clareamento"). Se mesmo assim
+  não conseguir identificar, pode chamar criar_agendamento sem preencher esse campo.
+
 REGRAS RÍGIDAS:
 - NUNCA prometa um horário sem antes verificar disponibilidade.
 - NUNCA invente horários ou diga "tenho às 14h" sem ter consultado.
@@ -337,6 +352,15 @@ FERRAMENTAS = [
                 "nome_completo": {
                     "type": "string",
                     "description": "Nome completo do paciente."
+                },
+                "observacao": {
+                    "type": "string",
+                    "description": (
+                        "Motivo/tratamento pelo qual o lead quer a consulta (ex: 'Interesse em "
+                        "clareamento', 'Avaliação', 'Harmonização facial'). Preencha com o que já "
+                        "foi dito na conversa — só pergunte diretamente se nunca apareceu. Pode "
+                        "deixar vazio se não foi possível identificar."
+                    )
                 }
             },
             "required": ["data_hora", "nome_completo"]
@@ -581,6 +605,8 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
         if not nome_paciente or len(nome_paciente) < 3:
             return "Erro: nome completo é obrigatório.", extra
 
+        observacao = (args.get("observacao") or "").strip() or None
+
         try:
             ag_id = criar_agendamento(
                 clinica_id=clinica["id"],
@@ -588,11 +614,13 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
                 data_hora=dt,
                 nome_lead=nome_paciente,
                 conversa_id=conversa_id,
-                origem="ana"
+                origem="ana",
+                observacao=observacao
             )
             extra["agendamento_criado_id"] = ag_id
             extra["agendamento_data_hora"] = dt
             extra["agendamento_nome"] = nome_paciente
+            extra["agendamento_observacao"] = observacao
 
             data_fmt = _formatar_data_extensa(dt)
             hora_fmt = dt.strftime("%H:%M")
