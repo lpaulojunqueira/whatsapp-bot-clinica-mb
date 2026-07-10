@@ -951,6 +951,25 @@ def obter_agendamento(agendamento_id):
     return ag
 
 
+def buscar_agendamentos_ativos_lead(clinica_id, numero_lead):
+    """Retorna os agendamentos confirmados (futuros) de um lead específico nessa clínica."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT id, data_hora, nome_lead, observacao
+        FROM agendamentos
+        WHERE clinica_id = %s AND numero_lead = %s AND status = 'confirmado'
+        ORDER BY data_hora ASC
+        """,
+        (clinica_id, numero_lead)
+    )
+    ags = cur.fetchall()
+    cur.close()
+    conn.close()
+    return ags
+
+
 # ---------- HORÁRIOS DISPONÍVEIS ----------
 def obter_horarios_disponiveis(clinica_id, data):
     """

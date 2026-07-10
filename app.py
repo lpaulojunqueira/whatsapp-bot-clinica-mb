@@ -28,7 +28,9 @@ from db import (
     obter_horarios_disponiveis_intervalo,
     criar_agendamento,
     cancelar_agendamento,
+    remarcar_agendamento,
     obter_agendamento,
+    buscar_agendamentos_ativos_lead,
     obter_config_horarios,
     listar_agendamentos,
     criar_bloqueio,
@@ -146,12 +148,17 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
     nome_paciente = agendamento_info["agendamento_nome"]
     ag_id = agendamento_info["agendamento_criado_id"]
     motivo = agendamento_info.get("agendamento_observacao") or "não informado"
+    tipo = agendamento_info.get("agendamento_tipo", "novo")
 
     data_fmt = _formatar_data_extensa(data_hora)
     hora_fmt = data_hora.strftime("%H:%M")
 
+    titulo = (
+        "🗓️ *Novo agendamento marcado pela Ana*" if tipo == "novo"
+        else "🔁 *Agendamento remarcado pela Ana*"
+    )
     texto = (
-        f"🗓️ *Novo agendamento marcado pela Ana*\n\n"
+        f"{titulo}\n\n"
         f"*Paciente:* {nome_paciente}\n"
         f"*Telefone:* {numero_lead}\n"
         f"*Data:* {data_fmt}\n"
@@ -264,7 +271,7 @@ def construir_contexto_temporal():
 INSTRUCOES_AGENDAMENTO = """
 
 ===== AGENDAMENTO =====
-Você tem 3 ferramentas pra agendar consultas:
+Você tem estas ferramentas pra agendar consultas:
 
 1. **verificar_disponibilidade** — use SEMPRE antes de propor horários ao lead.
    Nunca chute horários disponíveis. Sempre consulte primeiro.
@@ -273,7 +280,14 @@ Você tem 3 ferramentas pra agendar consultas:
    (a) confirmou explicitamente um horário específico, E
    (b) você já tem o NOME COMPLETO dele.
 
-3. **cancelar_agendamento** — use se o lead quiser cancelar um agendamento que ele tem.
+3. **cancelar_agendamento** — use se o lead quiser cancelar (sem remarcar) um agendamento que ele tem.
+
+4. **consultar_meu_agendamento** — use pra descobrir o ID do(s) agendamento(s) ativo(s)
+   desse contato, quando o lead pedir pra remarcar ou cancelar e o ID não estiver claro
+   pelo histórico da conversa.
+
+5. **remarcar_agendamento** — use quando o lead JÁ TEM um agendamento e quer MUDAR o
+   dia/horário dele. NÃO use cancelar_agendamento + criar_agendamento pra isso.
 
 FLUXO IDEAL DE AGENDAMENTO:
 1. Lead manifesta interesse em marcar.
@@ -301,6 +315,20 @@ MOTIVO/TRATAMENTO DO AGENDAMENTO:
   tratamento?"
 - Preencha `observacao` de forma curta (ex: "Interesse em clareamento"). Se mesmo assim
   não conseguir identificar, pode chamar criar_agendamento sem preencher esse campo.
+
+FLUXO DE REAGENDAMENTO (lead já tem consulta marcada e quer mudar dia/horário):
+1. Identifique o ID do agendamento atual. Se apareceu antes na conversa (na mensagem de
+   confirmação de quando foi marcado), use esse ID direto. Se não tiver certeza, chame
+   consultar_meu_agendamento primeiro pra descobrir.
+2. Pergunta a nova preferência de dia/período e chama verificar_disponibilidade
+   normalmente pro novo intervalo, do mesmo jeito que faria pra um agendamento novo.
+3. Quando o lead confirmar o novo horário, chame remarcar_agendamento passando o ID
+   do agendamento e a nova data/hora. NUNCA use cancelar_agendamento seguido de
+   criar_agendamento pra isso — remarcar_agendamento já move o mesmo registro mantendo
+   nome e motivo, e cancelar perderia essas informações à toa.
+4. Confirme ao lead a mudança com a nova data e horário por extenso.
+5. Se remarcar_agendamento retornar erro de horário ocupado, peça desculpa e proponha
+   outro (use verificar_disponibilidade de novo).
 
 REGRAS RÍGIDAS:
 - NUNCA prometa um horário sem antes verificar disponibilidade.
@@ -381,6 +409,41 @@ FERRAMENTAS = [
                 }
             },
             "required": ["agendamento_id"]
+        }
+    },
+    {
+        "name": "consultar_meu_agendamento",
+        "description": (
+            "Consulta o(s) agendamento(s) ativo(s) do lead atual nesta clínica. Use quando "
+            "o lead quiser remarcar ou cancelar mas o ID do agendamento não estiver claro "
+            "pelo histórico da conversa. Não precisa de parâmetros."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "remarcar_agendamento",
+        "description": (
+            "Move um agendamento existente do lead pra um novo dia/horário, mantendo o "
+            "mesmo registro (nome, motivo). Use quando o lead quiser MUDAR o horário de "
+            "uma consulta já marcada, em vez de cancelar_agendamento + criar_agendamento."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agendamento_id": {
+                    "type": "integer",
+                    "description": "ID do agendamento a remarcar."
+                },
+                "nova_data_hora": {
+                    "type": "string",
+                    "description": "Nova data e hora, formato AAAA-MM-DDTHH:MM. Ex: 2026-06-25T15:00"
+                }
+            },
+            "required": ["agendamento_id", "nova_data_hora"]
         }
     }
 ]
@@ -656,6 +719,59 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
         if cancelar_agendamento(ag_id):
             return "Agendamento cancelado com sucesso. Confirme ao lead.", extra
         return "Erro: agendamento já estava cancelado ou não pôde ser cancelado.", extra
+
+    elif nome == "consultar_meu_agendamento":
+        ags = buscar_agendamentos_ativos_lead(clinica["id"], numero_lead)
+        if not ags:
+            return "Esse contato não tem nenhum agendamento ativo no momento.", extra
+
+        linhas = []
+        for a in ags:
+            dh = a["data_hora"]
+            motivo = a.get("observacao") or "não informado"
+            linhas.append(
+                f"  - ID {a['id']}: {_formatar_data_extensa(dh)} às {dh.strftime('%H:%M')} "
+                f"| Motivo: {motivo}"
+            )
+        return "Agendamento(s) ativo(s) desse contato:\n" + "\n".join(linhas), extra
+
+    elif nome == "remarcar_agendamento":
+        try:
+            ag_id = int(args["agendamento_id"])
+            dt = datetime.strptime(args["nova_data_hora"], "%Y-%m-%dT%H:%M")
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=-3)))
+        except (ValueError, KeyError, TypeError):
+            return "Erro: dados inválidos. Confira ID e formato de data (AAAA-MM-DDTHH:MM).", extra
+
+        ag = obter_agendamento(ag_id)
+        if not ag:
+            return "Erro: agendamento não encontrado.", extra
+        if ag["clinica_id"] != clinica["id"] or ag["numero_lead"] != numero_lead:
+            return "Erro: esse agendamento não pertence a esse contato.", extra
+
+        try:
+            remarcar_agendamento(ag_id, dt)
+        except ValueError as e:
+            if "ocupado" in str(e):
+                return (
+                    "Erro: esse novo horário está ocupado. "
+                    "Peça desculpa ao lead e proponha outro horário "
+                    "(use verificar_disponibilidade de novo)."
+                ), extra
+            return f"Erro ao remarcar: {e}", extra
+
+        extra["agendamento_criado_id"] = ag_id
+        extra["agendamento_data_hora"] = dt
+        extra["agendamento_nome"] = ag["nome_lead"]
+        extra["agendamento_observacao"] = ag.get("observacao")
+        extra["agendamento_tipo"] = "remarcado"
+
+        data_fmt = _formatar_data_extensa(dt)
+        hora_fmt = dt.strftime("%H:%M")
+        return (
+            f"Agendamento remarcado com sucesso pra {data_fmt} às {hora_fmt}. "
+            f"Confirme isso ao lead de forma natural na próxima resposta."
+        ), extra
 
     return f"Erro: ferramenta '{nome}' desconhecida.", extra
 
