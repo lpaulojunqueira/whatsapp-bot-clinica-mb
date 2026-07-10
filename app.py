@@ -986,6 +986,15 @@ def transcrever_audio(audio_bytes):
 # ============================================================
 # QUEBRA DE RESPOSTA EM PARTES
 # ============================================================
+def _remover_travessao(texto):
+    """
+    Substitui travessão longo (—) por vírgula. Os prompts já instruem a Ana
+    a não usar, mas o modelo insiste às vezes — isso garante 100% independente
+    do prompt de cada cliente.
+    """
+    return texto.replace(" — ", ", ").replace("—", ", ")
+
+
 def quebrar_em_partes(texto):
     """
     Quebra a resposta em mensagens curtas — como uma pessoa real no WhatsApp.
@@ -1134,6 +1143,8 @@ def processar_mensagem_em_background(
                 token=token_clinica
             )
             return
+
+        resposta_completa = _remover_travessao(resposta_completa)
 
         # 5) Salva a resposta da Ana inteira no banco.
         salvar_mensagem(conversa_id, "assistant", resposta_completa)
