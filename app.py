@@ -52,6 +52,9 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "meu_token_secreto_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Nome do template aprovado na Meta pra notificar o responsável da clínica
+# sobre agendamentos (foge da janela de 24h que mensagem de texto livre exige).
+TEMPLATE_NOTIFICACAO_AGENDAMENTO = os.getenv("TEMPLATE_NOTIFICACAO_AGENDAMENTO", "notificacao_agendamento_ana")
 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -114,6 +117,43 @@ def enviar_mensagem_whatsapp(phone_number_id, numero_destino, texto, token=None)
         return False
 
 
+def enviar_template_whatsapp(phone_number_id, numero_destino, template_name, parametros_body, token=None):
+    """
+    Envia mensagem via template aprovado da Meta (HSM).
+    Diferente de mensagem de texto livre, o template ignora a janela de 24h de
+    atendimento — funciona mesmo que o destinatário não tenha mandado mensagem
+    recente pro número. Necessário pra notificar o dono da clínica, que
+    normalmente não conversa direto com o número da Ana.
+    """
+    url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token or WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero_destino,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": "pt_BR"},
+            "components": [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(p)} for p in parametros_body],
+            }],
+        },
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"❌ Erro ao enviar template '{template_name}': {e}")
+        if "r" in locals():
+            print(f"   Resposta da Meta: {r.text}")
+        return False
+
+
 def _normalizar_telefone_br(telefone):
     """Limpa formatação e adiciona 55 se necessário. Retorna só os dígitos."""
     if not telefone:
@@ -153,6 +193,7 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
     data_fmt = _formatar_data_extensa(data_hora)
     hora_fmt = data_hora.strftime("%H:%M")
 
+    tipo_label = "Novo" if tipo == "novo" else "Remarcado"
     titulo = (
         "🗓️ *Novo agendamento marcado pela Ana*" if tipo == "novo"
         else "🔁 *Agendamento remarcado pela Ana*"
@@ -167,16 +208,29 @@ def notificar_agendamento_para_responsavel(clinica, agendamento_info, numero_lea
         f"_Ver detalhes e gerenciar no painel Converte.ai_"
     )
 
-    print(f"📲 Enviando notificação pra {telefone_responsavel} via phone_id {clinica['phone_number_id']}")
+    print(f"📲 Enviando notificação (template) pra {telefone_responsavel} via phone_id {clinica['phone_number_id']}")
     try:
-        sucesso = enviar_mensagem_whatsapp(
-            clinica["phone_number_id"], telefone_responsavel, texto,
-            token=clinica.get("whatsapp_token")
+        # Mensagem de texto livre só entrega se o responsável tiver mandado
+        # mensagem pro número da Ana nas últimas 24h — o que raramente acontece
+        # (dono não costuma conversar direto com a Ana). Por isso usamos template
+        # aprovado primeiro, que ignora essa janela. Texto livre fica só de fallback
+        # pro caso raro da janela estar aberta e o template ainda não ter sido aprovado.
+        sucesso = enviar_template_whatsapp(
+            clinica["phone_number_id"], telefone_responsavel,
+            TEMPLATE_NOTIFICACAO_AGENDAMENTO,
+            [tipo_label, nome_paciente, numero_lead, data_fmt, hora_fmt, motivo],
+            token=clinica.get("whatsapp_token"),
         )
+        if not sucesso:
+            print("⚠️ Template falhou — tentando texto livre como fallback.")
+            sucesso = enviar_mensagem_whatsapp(
+                clinica["phone_number_id"], telefone_responsavel, texto,
+                token=clinica.get("whatsapp_token")
+            )
         if sucesso:
             print(f"✅ Responsável de {clinica['nome']} notificado sobre agendamento #{ag_id}")
         else:
-            print(f"❌ enviar_mensagem_whatsapp retornou False — verifique log acima.")
+            print(f"❌ Notificação falhou (template e texto livre) — verifique log acima.")
     except Exception as e:
         print(f"❌ Exceção ao notificar responsável: {e}")
         import traceback

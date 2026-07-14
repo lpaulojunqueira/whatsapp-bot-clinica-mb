@@ -41,9 +41,46 @@ Push no GitHub → Render puxa automaticamente → deploy em ~2-3 min
 - Foco comercial: vender pra 3 primeiros clientes com oferta R$ 800 setup + R$ 800 mês 1 + R$ 1600/mês recorrente
 - Modo agência (WABAs ficam na BM Luizpaulo.js do Luiz), não SaaS puro
 - Sprints pendentes prioritários:
-  1. Notificação WhatsApp pro dono precisa citar TRATAMENTO/motivo do agendamento
+  1. ~~Notificação WhatsApp pro dono precisa citar TRATAMENTO/motivo do agendamento~~ (feito 10/jul)
   2. Múltiplos profissionais por clínica (adiado até 2-3 clientes)
   3. Confirmação 24h anti no-show (precisa entender custo Meta primeiro)
+
+## PENDÊNCIA CRÍTICA: template de notificação (13/jul/2026)
+A notificação de agendamento pro dono (`notificar_agendamento_para_responsavel` em
+`app.py`) mandava mensagem de texto livre (`type: text`). Isso só entrega se o
+destinatário tiver mandado mensagem pro número da Ana nas últimas 24h — como o
+dono normalmente NÃO conversa direto com a Ana, a notificação vinha falhando
+silenciosamente (só log no Render, ninguém via). É por isso que a MB parou de
+receber aviso de agendamento.
+
+Correção: `enviar_template_whatsapp()` manda via template aprovado (ignora a
+janela de 24h), com fallback pro texto livre se o template falhar.
+
+**Isso só funciona depois de criar e ter aprovado o template na Meta:**
+- WhatsApp Manager → Modelos de mensagem → Criar modelo
+- Nome: `notificacao_agendamento_ana` (bate com `TEMPLATE_NOTIFICACAO_AGENDAMENTO`
+  em `app.py`; dá pra sobrescrever via env var do mesmo nome)
+- Categoria: Utilitário
+- Idioma: Português (BR)
+- Corpo (6 variáveis, NESSA ORDEM — tipo, paciente, telefone, data, horário, motivo):
+  ```
+  📋 Notificação de agendamento pela Ana
+
+  *Tipo:* {{1}}
+  *Paciente:* {{2}}
+  *Telefone:* {{3}}
+  *Data:* {{4}}
+  *Horário:* {{5}}
+  *Motivo:* {{6}}
+
+  Ver detalhes e gerenciar no painel Converte.ai
+  ```
+- Preencher exemplos de cada variável na hora de submeter (exigido pela Meta),
+  ex: Novo / Maria Silva / 5519999999999 / Quinta-feira, 18 de junho de 2026 / 14:30 / Avaliação
+- Aprovação da Meta costuma sair em minutos pra template utilitário simples,
+  mas pode levar até 24h.
+- Enquanto não aprovado, o fallback de texto livre mantém o comportamento atual
+  (só funciona se o dono tiver conversado recentemente com a Ana).
 
 ## Contexto do Luiz
 Estilo direto, anti-hype. Prefere respostas objetivas mas com desenvolvimento. Não busca validação. Quer conselho estratégico honesto, não gerador de respostas agradáveis.
