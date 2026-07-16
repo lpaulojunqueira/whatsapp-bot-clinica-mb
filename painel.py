@@ -38,6 +38,10 @@ from db import (
     cancelar_agendamento,
     remover_bloqueio,
     obter_agendamento,
+    criar_agendamento,
+    remarcar_agendamento,
+    atualizar_agendamento,
+    criar_bloqueio,
 )
 
 
@@ -873,6 +877,28 @@ PAINEL_HTML = """
   }
   .btn-perigo:hover { background: #B91C1C; }
 
+  /* Formulários dentro do modal da agenda (criar/editar) */
+  .ag-form label {
+    display: block; font-size: 12px; font-weight: 600;
+    color: var(--cinza-texto); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 6px;
+  }
+  .ag-form input, .ag-form select {
+    width: 100%; padding: 10px 12px;
+    border: 1.5px solid var(--cinza-borda); border-radius: 8px;
+    font-size: 14px; font-family: inherit; color: var(--carvao);
+    margin-bottom: 14px; background: #fff;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .ag-form input:focus, .ag-form select:focus {
+    outline: none; border-color: var(--verde);
+    box-shadow: 0 0 0 3px var(--verde-claro);
+  }
+
+  /* Célula livre é clicável (cria agendamento/bloqueio) */
+  .agenda-celula { cursor: pointer; }
+  .agenda-celula:not(.fora-expediente):hover { background: var(--verde-claro); }
+
   /* ============================================================ */
   /* DATA/HORA nas mensagens do painel de conversas                */
   /* ============================================================ */
@@ -1551,7 +1577,8 @@ function renderizarAgenda() {
       const eForaHora = (h < horaAbre) || (h >= horaFecha);
       const foraExpediente = eForaDia || eForaHora;
       html += `<div class="agenda-celula ${foraExpediente ? 'fora-expediente' : ''}"
-                    data-dia="${iso(d)}" data-hora="${h}"></div>`;
+                    data-dia="${iso(d)}" data-hora="${h}"
+                    onclick="clicarCelulaAgenda(event, '${iso(d)}', ${h})"></div>`;
     }
   }
   html += '</div>';
@@ -1664,6 +1691,10 @@ function atualizarResumoAgenda() {
       <strong>${blqs.length}</strong>
       ${blqs.length === 1 ? 'bloqueio' : 'bloqueios'} na semana
     </div>
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--cinza-divisor); font-size:11px;">
+      Clique num horário livre pra criar um agendamento ou bloqueio.
+      Clique num bloco pra ver, editar ou cancelar.
+    </div>
   `;
   document.getElementById('agenda-resumo').innerHTML = html;
 }
@@ -1678,7 +1709,10 @@ function fmtDataHora(dtStr) {
   return `${dd}/${mm}/${yy} às ${hh}:${min}`;
 }
 
+let agAtual = null;  // agendamento aberto no modal (pra edição)
+
 function abrirDetalheAgendamento(ag) {
+  agAtual = ag;
   document.getElementById('ag-modal-titulo').textContent = 'Agendamento';
   const origemLabel = ag.origem === 'manual' ? 'Manual' : 'Ana';
   document.getElementById('ag-modal-body').innerHTML = `
@@ -1691,9 +1725,172 @@ function abrirDetalheAgendamento(ag) {
   `;
   document.getElementById('ag-modal-rodape').innerHTML = `
     <button type="button" class="btn btn-pequeno" onclick="fecharModalAgenda()">Fechar</button>
+    <button type="button" class="btn btn-primario" onclick="editarAgendamentoModal()">Editar</button>
     <button type="button" class="btn-perigo" onclick="cancelarAgendamentoAgenda(${ag.id})">Cancelar agendamento</button>
   `;
   document.getElementById('agenda-modal').style.display = 'flex';
+}
+
+function escaparAttr(s) {
+  return (s || '').toString()
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function dtLocalValor(dtStr) {
+  // Converte ISO em valor aceito pelo input datetime-local (AAAA-MM-DDTHH:MM)
+  const d = new Date(dtStr);
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function editarAgendamentoModal() {
+  const ag = agAtual;
+  if (!ag) return;
+  document.getElementById('ag-modal-titulo').textContent = 'Editar agendamento';
+  document.getElementById('ag-modal-body').innerHTML = `
+    <div class="ag-form">
+      <label>Nome do paciente</label>
+      <input type="text" id="ed-ag-nome" value="${escaparAttr(ag.nome_lead || '')}">
+      <label>Data e horário</label>
+      <input type="datetime-local" id="ed-ag-datahora" value="${dtLocalValor(ag.data_hora)}">
+      <label>Motivo</label>
+      <input type="text" id="ed-ag-motivo" value="${escaparAttr(ag.observacao || '')}"
+             placeholder="Ex: avaliação, clareamento...">
+    </div>
+  `;
+  document.getElementById('ag-modal-rodape').innerHTML = `
+    <button type="button" class="btn btn-pequeno" onclick="abrirDetalheAgendamento(agAtual)">Voltar</button>
+    <button type="button" class="btn btn-verde" onclick="salvarEdicaoAgendamento()">Salvar</button>
+  `;
+}
+
+async function salvarEdicaoAgendamento() {
+  if (!agAtual) return;
+  const nome = document.getElementById('ed-ag-nome').value.trim();
+  const dataHora = document.getElementById('ed-ag-datahora').value;
+  if (nome.length < 3) { alert('Informe o nome do paciente.'); return; }
+  if (!dataHora) { alert('Informe a data e o horário.'); return; }
+
+  const r = await fetch('/painel/api/agendamentos/' + agAtual.id, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      nome_lead: nome,
+      observacao: document.getElementById('ed-ag-motivo').value.trim(),
+      data_hora: dataHora.substring(0, 16),
+    })
+  });
+  if (r.ok) {
+    fecharModalAgenda();
+    carregarAgenda();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    alert('Erro: ' + (data.erro || 'falha ao salvar'));
+  }
+}
+
+// ============================================================
+// CRIAR AGENDAMENTO / BLOQUEIO (clique em célula vazia)
+// ============================================================
+function clicarCelulaAgenda(event, dia, hora) {
+  // Clique num bloco (agendamento/bloqueio) abre o detalhe dele, não o criar.
+  if (event.target.closest('.agenda-bloco')) return;
+  if (!agendaClinicaId) return;
+  abrirModalCriar(dia, hora);
+}
+
+function abrirModalCriar(dia, hora) {
+  const hh = String(hora).padStart(2,'0');
+  const hhFim = String(Math.min(hora + 1, 23)).padStart(2,'0');
+  document.getElementById('ag-modal-titulo').textContent = 'Novo';
+  document.getElementById('ag-modal-body').innerHTML = `
+    <div class="ag-form">
+      <label>Tipo</label>
+      <select id="novo-tipo" onchange="alternarTipoNovo()">
+        <option value="agendamento">Agendamento</option>
+        <option value="bloqueio">Bloqueio</option>
+      </select>
+      <div id="novo-campos-agendamento">
+        <label>Nome do paciente</label>
+        <input type="text" id="novo-nome" placeholder="Nome completo">
+        <label>Telefone <span style="text-transform:none; font-weight:400">— opcional</span></label>
+        <input type="text" id="novo-telefone" placeholder="(19) 99999-9999">
+        <label>Data e horário</label>
+        <input type="datetime-local" id="novo-datahora" value="${dia}T${hh}:00">
+        <label>Motivo <span style="text-transform:none; font-weight:400">— opcional</span></label>
+        <input type="text" id="novo-motivo" placeholder="Ex: avaliação, clareamento...">
+      </div>
+      <div id="novo-campos-bloqueio" style="display:none">
+        <label>Início</label>
+        <input type="datetime-local" id="novo-bloq-inicio" value="${dia}T${hh}:00">
+        <label>Fim</label>
+        <input type="datetime-local" id="novo-bloq-fim" value="${dia}T${hhFim}:00">
+        <label>Motivo <span style="text-transform:none; font-weight:400">— opcional</span></label>
+        <input type="text" id="novo-bloq-motivo" placeholder="Ex: almoço, compromisso, feriado...">
+      </div>
+    </div>
+  `;
+  document.getElementById('ag-modal-rodape').innerHTML = `
+    <button type="button" class="btn btn-pequeno" onclick="fecharModalAgenda()">Cancelar</button>
+    <button type="button" class="btn btn-verde" onclick="salvarNovoAgenda()">Salvar</button>
+  `;
+  document.getElementById('agenda-modal').style.display = 'flex';
+}
+
+function alternarTipoNovo() {
+  const tipo = document.getElementById('novo-tipo').value;
+  document.getElementById('novo-campos-agendamento').style.display =
+    (tipo === 'agendamento') ? '' : 'none';
+  document.getElementById('novo-campos-bloqueio').style.display =
+    (tipo === 'bloqueio') ? '' : 'none';
+}
+
+async function salvarNovoAgenda() {
+  const tipo = document.getElementById('novo-tipo').value;
+  // Admin manda a clínica selecionada; cliente comum usa a da sessão no backend.
+  const clinicaExtra = (agendaClinicaId && agendaClinicaId !== 'meu')
+    ? { clinica_id: agendaClinicaId } : {};
+
+  let url, body;
+  if (tipo === 'agendamento') {
+    const nome = document.getElementById('novo-nome').value.trim();
+    const dataHora = document.getElementById('novo-datahora').value;
+    if (nome.length < 3) { alert('Informe o nome do paciente.'); return; }
+    if (!dataHora) { alert('Informe a data e o horário.'); return; }
+    url = '/painel/api/agendamentos';
+    body = {
+      ...clinicaExtra,
+      nome,
+      telefone: document.getElementById('novo-telefone').value.trim(),
+      data_hora: dataHora.substring(0, 16),
+      observacao: document.getElementById('novo-motivo').value.trim(),
+    };
+  } else {
+    const inicio = document.getElementById('novo-bloq-inicio').value;
+    const fim = document.getElementById('novo-bloq-fim').value;
+    if (!inicio || !fim) { alert('Informe início e fim do bloqueio.'); return; }
+    url = '/painel/api/bloqueios';
+    body = {
+      ...clinicaExtra,
+      inicio: inicio.substring(0, 16),
+      fim: fim.substring(0, 16),
+      motivo: document.getElementById('novo-bloq-motivo').value.trim(),
+    };
+  }
+
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (r.ok) {
+    fecharModalAgenda();
+    carregarAgenda();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    alert('Erro: ' + (data.erro || 'falha ao salvar'));
+  }
 }
 
 function abrirDetalheBloqueio(b) {
@@ -2945,3 +3142,118 @@ def registrar_rotas(app):
 
         ok = remover_bloqueio(bloqueio_id)
         return jsonify({"ok": ok})
+
+    # ============================================================
+    # AGENDA EDITÁVEL (criar/editar pelo painel)
+    # ============================================================
+    def _clinica_alvo():
+        """
+        Resolve a clínica alvo de uma escrita na agenda.
+        Cliente comum: sempre a da sessão. Admin: passa clinica_id no body.
+        Retorna (clinica_id, None) ou (None, resposta_de_erro).
+        """
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None:
+            return clinica_sessao, None
+        body = request.get_json(silent=True) or {}
+        cid = body.get("clinica_id")
+        try:
+            return int(cid), None
+        except (TypeError, ValueError):
+            return None, (jsonify({"erro": "clinica_id obrigatório pra admin"}), 400)
+
+    def _parse_dt_brasil(valor):
+        """Converte 'AAAA-MM-DDTHH:MM' pra datetime com fuso de Brasília. None se inválido."""
+        from datetime import datetime, timezone, timedelta
+        try:
+            tz = timezone(timedelta(hours=-3))
+            return datetime.strptime(valor or "", "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+        except ValueError:
+            return None
+
+    @app.route("/painel/api/agendamentos", methods=["POST"])
+    @login_required
+    def api_criar_agendamento():
+        """Cria agendamento manual pelo painel (clique em horário livre da agenda)."""
+        clinica_id, erro = _clinica_alvo()
+        if erro:
+            return erro
+
+        body = request.get_json() or {}
+        nome = (body.get("nome") or "").strip()
+        if len(nome) < 3:
+            return jsonify({"erro": "nome do paciente é obrigatório"}), 400
+
+        dt = _parse_dt_brasil(body.get("data_hora"))
+        if not dt:
+            return jsonify({"erro": "data/hora inválida"}), 400
+
+        telefone = (body.get("telefone") or "").strip()
+        observacao = (body.get("observacao") or "").strip() or None
+        try:
+            ag_id = criar_agendamento(
+                clinica_id=clinica_id,
+                numero_lead=telefone or "manual",
+                data_hora=dt,
+                nome_lead=nome,
+                origem="manual",
+                observacao=observacao,
+            )
+            return jsonify({"id": ag_id})
+        except ValueError as e:
+            if "ocupado" in str(e):
+                return jsonify({"erro": "esse horário já está ocupado"}), 409
+            return jsonify({"erro": str(e)}), 400
+
+    @app.route("/painel/api/agendamentos/<int:agendamento_id>", methods=["PATCH"])
+    @login_required
+    def api_editar_agendamento(agendamento_id):
+        """Edita agendamento: nome, motivo e/ou data_hora (remarca com anti-conflito)."""
+        ag = obter_agendamento(agendamento_id)
+        if not ag:
+            return jsonify({"erro": "agendamento não encontrado"}), 404
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None and ag["clinica_id"] != clinica_sessao:
+            return jsonify({"erro": "sem permissão"}), 403
+
+        body = request.get_json() or {}
+
+        # Remarca primeiro: se o novo horário conflitar, nada é alterado.
+        nova_data = body.get("data_hora")
+        if nova_data:
+            dt = _parse_dt_brasil(nova_data)
+            if not dt:
+                return jsonify({"erro": "data/hora inválida"}), 400
+            try:
+                remarcar_agendamento(agendamento_id, dt)
+            except ValueError as e:
+                if "ocupado" in str(e):
+                    return jsonify({"erro": "o novo horário já está ocupado"}), 409
+                return jsonify({"erro": str(e)}), 400
+
+        atualizar_agendamento(
+            agendamento_id,
+            nome_lead=body.get("nome_lead"),
+            observacao=body.get("observacao"),
+        )
+        return jsonify({"ok": True})
+
+    @app.route("/painel/api/bloqueios", methods=["POST"])
+    @login_required
+    def api_criar_bloqueio():
+        """Cria bloqueio pelo painel (clique em horário livre da agenda)."""
+        clinica_id, erro = _clinica_alvo()
+        if erro:
+            return erro
+
+        body = request.get_json() or {}
+        inicio = _parse_dt_brasil(body.get("inicio"))
+        fim = _parse_dt_brasil(body.get("fim"))
+        if not inicio or not fim:
+            return jsonify({"erro": "datas inválidas"}), 400
+        if fim <= inicio:
+            return jsonify({"erro": "o fim precisa ser depois do início"}), 400
+
+        motivo = (body.get("motivo") or "").strip() or "Bloqueio manual"
+        bid = criar_bloqueio(clinica_id, inicio, fim, motivo)
+        return jsonify({"id": bid})

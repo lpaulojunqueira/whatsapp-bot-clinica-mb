@@ -909,6 +909,37 @@ def remarcar_agendamento(agendamento_id, nova_data_hora):
     return True
 
 
+def atualizar_agendamento(agendamento_id, nome_lead=None, observacao=None):
+    """
+    Atualiza campos editáveis de um agendamento (nome e/ou observação).
+    Passar None mantém o valor atual. Pra mudar data_hora use remarcar_agendamento
+    (que valida anti-conflito). Retorna True se o agendamento existia.
+    """
+    campos = []
+    valores = []
+    if nome_lead is not None:
+        campos.append("nome_lead = %s")
+        valores.append(nome_lead.strip())
+    if observacao is not None:
+        campos.append("observacao = %s")
+        valores.append((observacao or "").strip() or None)
+
+    if not campos:
+        return True
+
+    sql = f"UPDATE agendamentos SET {', '.join(campos)} WHERE id = %s"
+    valores.append(agendamento_id)
+
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(sql, tuple(valores))
+    afetadas = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return afetadas > 0
+
+
 def listar_agendamentos(clinica_id, data_inicio, data_fim,
                         incluir_cancelados=False):
     """
