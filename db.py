@@ -50,6 +50,25 @@ def inicializar_banco():
         ADD COLUMN IF NOT EXISTS whatsapp_token TEXT;
     """)
 
+    # Rastreamento de conversões da Meta (Conversions API) por tenant.
+    # Vazio / capi_ativo=false = rastreamento desligado, sem erro.
+    cur.execute("""
+        ALTER TABLE clinicas
+        ADD COLUMN IF NOT EXISTS meta_dataset_id TEXT;
+    """)
+    cur.execute("""
+        ALTER TABLE clinicas
+        ADD COLUMN IF NOT EXISTS meta_capi_token TEXT;
+    """)
+    cur.execute("""
+        ALTER TABLE clinicas
+        ADD COLUMN IF NOT EXISTS capi_ativo BOOLEAN DEFAULT FALSE;
+    """)
+    cur.execute("""
+        ALTER TABLE clinicas
+        ADD COLUMN IF NOT EXISTS meta_test_event_code TEXT;
+    """)
+
     # Tabela de conversas — uma por (clínica, lead).
     cur.execute("""
         CREATE TABLE IF NOT EXISTS conversas (
@@ -68,6 +87,22 @@ def inicializar_banco():
         ALTER TABLE conversas
         ADD COLUMN IF NOT EXISTS pausada BOOLEAN DEFAULT FALSE;
     """)
+
+    # Atribuição de anúncio click-to-WhatsApp (referral). Capturado SEMPRE,
+    # mesmo com CAPI desligado — o dado de origem é valioso por si.
+    for coluna, tipo in [
+        ("ctwa_clid", "TEXT"),
+        ("referral_source_id", "TEXT"),
+        ("referral_source_type", "TEXT"),
+        ("referral_source_url", "TEXT"),
+        ("referral_headline", "TEXT"),
+        ("referral_body", "TEXT"),
+        ("referral_json", "JSONB"),
+        ("referral_captado_em", "TIMESTAMPTZ"),
+    ]:
+        cur.execute(
+            f"ALTER TABLE conversas ADD COLUMN IF NOT EXISTS {coluna} {tipo};"
+        )
 
     # Tabela de mensagens — histórico completo.
     cur.execute("""
@@ -216,6 +251,34 @@ def inicializar_banco():
         ON mensagens(message_id_whatsapp);
     """)
 
+    # Log de eventos enviados pra Conversions API da Meta.
+    # event_id UNIQUE garante deduplicação (não reenvia o mesmo evento).
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS capi_eventos (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            conversa_id INT REFERENCES conversas(id),
+            event_name TEXT NOT NULL,
+            event_id TEXT NOT NULL UNIQUE,
+            status TEXT,
+            resposta TEXT,
+            criado_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    # Vendas registradas manualmente (fecho de contrato/compra). Dispara Purchase.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS vendas (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            conversa_id INT NOT NULL REFERENCES conversas(id),
+            valor NUMERIC(12,2),
+            moeda TEXT DEFAULT 'BRL',
+            descricao TEXT,
+            registrada_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -331,6 +394,145 @@ def obter_ou_criar_conversa(clinica_id, numero_lead):
     cur.close()
     conn.close()
     return conversa_id
+
+
+def obter_conversa(conversa_id):
+    """Retorna a linha completa da conversa (inclui campos de referral) ou None."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM conversas WHERE id = %s", (conversa_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def buscar_conversa_por_numero(clinica_id, numero):
+    """
+    Acha a conversa mais recente de um lead pelo número, comparando os últimos
+    10 dígitos (ignora DDI e formatação). Retorna a linha ou None.
+    """
+    import re as _re
+    digitos = _re.sub(r"\D", "", numero or "")
+    if len(digitos) < 8:
+        return None
+    ultimos = digitos[-10:] if len(digitos) >= 10 else digitos
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT * FROM conversas
+        WHERE clinica_id = %s
+          AND RIGHT(regexp_replace(numero_lead, '\\D', '', 'g'), %s) = %s
+        ORDER BY atualizada_em DESC
+        LIMIT 1
+        """,
+        (clinica_id, len(ultimos), ultimos)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def salvar_referral_conversa(conversa_id, referral):
+    """
+    Salva os dados de atribuição do anúncio (referral do click-to-WhatsApp) na
+    conversa. First-touch: só grava se a conversa ainda não tiver referral, pra
+    preservar a origem original. Idempotente e seguro chamar em toda mensagem.
+    """
+    if not referral:
+        return
+    from psycopg.types.json import Json
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE conversas SET
+            ctwa_clid = %s,
+            referral_source_id = %s,
+            referral_source_type = %s,
+            referral_source_url = %s,
+            referral_headline = %s,
+            referral_body = %s,
+            referral_json = %s,
+            referral_captado_em = NOW()
+        WHERE id = %s AND referral_captado_em IS NULL
+        """,
+        (
+            referral.get("ctwa_clid"),
+            referral.get("source_id"),
+            referral.get("source_type"),
+            referral.get("source_url"),
+            referral.get("headline"),
+            referral.get("body"),
+            Json(referral),
+            conversa_id,
+        )
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# ---------- CONVERSIONS API (log + deduplicação) ----------
+def capi_evento_ja_enviado(event_id):
+    """True se esse event_id já foi enviado com sucesso (evita reenvio)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM capi_eventos WHERE event_id = %s AND status = 'enviado' LIMIT 1",
+        (event_id,)
+    )
+    existe = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return existe
+
+
+def registrar_evento_capi(clinica_id, conversa_id, event_name, event_id,
+                          status, resposta=None):
+    """
+    Registra (ou atualiza) o resultado de um evento CAPI. Usa event_id como chave:
+    uma tentativa que falhou pode ser reenviada e o registro é atualizado.
+    """
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO capi_eventos
+            (clinica_id, conversa_id, event_name, event_id, status, resposta)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (event_id) DO UPDATE
+          SET status = EXCLUDED.status,
+              resposta = EXCLUDED.resposta,
+              criado_em = NOW()
+        """,
+        (clinica_id, conversa_id, event_name, event_id, status,
+         (resposta or "")[:2000])
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def registrar_venda(clinica_id, conversa_id, valor=None, moeda="BRL", descricao=None):
+    """Registra uma venda (fecho) numa conversa. Retorna o id da venda."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO vendas (clinica_id, conversa_id, valor, moeda, descricao)
+        VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """,
+        (clinica_id, conversa_id, valor, (moeda or "BRL").strip() or "BRL",
+         (descricao or "").strip() or None)
+    )
+    vid = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return vid
 
 
 def mensagem_ja_processada(message_id_whatsapp):
@@ -628,10 +830,13 @@ def atualizar_token_clinica(clinica_id, novo_token):
 
 def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
                      telefone_humano=None, whatsapp_token=None,
-                     system_prompt=None):
+                     system_prompt=None, meta_dataset_id=None,
+                     meta_capi_token=None, capi_ativo=None,
+                     meta_test_event_code=None):
     """
     Atualiza apenas os campos passados (não-None) de uma clínica.
-    Strings vazias viram None pra telefone/token (campos opcionais).
+    Strings vazias viram None pra telefone/token/campos CAPI (opcionais).
+    capi_ativo é boolean (passe True/False pra alterar).
     """
     campos = []
     valores = []
@@ -651,6 +856,18 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
     if system_prompt is not None:
         campos.append("system_prompt = %s")
         valores.append(system_prompt)
+    if meta_dataset_id is not None:
+        campos.append("meta_dataset_id = %s")
+        valores.append((meta_dataset_id or "").strip() or None)
+    if meta_capi_token is not None:
+        campos.append("meta_capi_token = %s")
+        valores.append((meta_capi_token or "").strip() or None)
+    if capi_ativo is not None:
+        campos.append("capi_ativo = %s")
+        valores.append(bool(capi_ativo))
+    if meta_test_event_code is not None:
+        campos.append("meta_test_event_code = %s")
+        valores.append((meta_test_event_code or "").strip() or None)
 
     if not campos:
         return

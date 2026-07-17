@@ -21,6 +21,10 @@ from db import (
     buscar_clinica_por_phone_id,
     buscar_clinica_por_telefone_humano,
     obter_ou_criar_conversa,
+    salvar_referral_conversa,
+    obter_conversa,
+    buscar_conversa_por_numero,
+    registrar_venda,
     mensagem_ja_processada,
     salvar_mensagem,
     obter_historico_conversa,
@@ -40,6 +44,7 @@ from db import (
     listar_profissionais,
 )
 from painel import registrar_rotas as registrar_rotas_painel
+import capi
 
 app = Flask(__name__)
 
@@ -600,6 +605,7 @@ Seu papel agora é de ASSISTENTE EXECUTIVA. O dono usa você pra:
 - Cancelar bloqueios anteriores
 - Consultar o que está marcado em determinado período
 - Desbloquear horários
+- Registrar uma VENDA quando ele fechar negócio com um lead (ex: "fechei com o fulano, 3 mil")
 
 TOM: direto, eficiente, sem rodeios. Sem "consultar nossa equipe", sem "vou verificar", sem floreios. Confirma a ação rapidamente.
 
@@ -622,6 +628,9 @@ USE estas ferramentas:
 - listar_bloqueios: consulta bloqueios ativos num período
 - remover_bloqueio: remove um bloqueio existente
 - verificar_disponibilidade: também disponível, se o dono quiser ver horários livres
+- registrar_venda: registra um fecho de negócio com um lead (precisa do número do lead;
+  o valor é opcional mas importante). Quando o dono disser que fechou/vendeu, use isso.
+  Se ele não informar o número do lead ou o valor, pergunte de forma curta antes de registrar.
 """
 
 
@@ -750,6 +759,34 @@ FERRAMENTAS_DONO = [
                 }
             },
             "required": ["data_inicio", "data_fim"]
+        }
+    },
+    {
+        "name": "registrar_venda",
+        "description": (
+            "Registra uma venda/fecho de negócio com um lead e dispara a conversão "
+            "pra Meta (Purchase). Use quando o dono avisar que FECHOU com um cliente "
+            "(ex: 'fechei com o fulano', 'o lead 11 99999-8888 fechou 3 mil'). "
+            "Precisa do número de WhatsApp do lead. Se o dono não disse o número, "
+            "peça. O valor é opcional mas importante — pergunte se ele não disse."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numero_lead": {
+                    "type": "string",
+                    "description": "Número de WhatsApp do lead que fechou (com DDD). Ex: 11999998888"
+                },
+                "valor": {
+                    "type": "number",
+                    "description": "Valor da venda em reais (ex: 3000). Opcional, mas recomendado."
+                },
+                "descricao": {
+                    "type": "string",
+                    "description": "Descrição curta do que foi vendido (opcional)."
+                }
+            },
+            "required": ["numero_lead"]
         }
     }
 ]
@@ -1055,6 +1092,50 @@ def _executar_ferramenta_dono(nome, args, clinica):
             return f"Bloqueio #{bid} removido.", extra
         return f"Bloqueio #{bid} não encontrado.", extra
 
+    elif nome == "registrar_venda":
+        numero = (args.get("numero_lead") or "").strip()
+        if not numero:
+            return "Erro: preciso do número do lead pra registrar a venda.", extra
+
+        conversa = buscar_conversa_por_numero(clinica["id"], numero)
+        if not conversa:
+            return (
+                f"Não encontrei nenhuma conversa com o número {numero} nesta clínica. "
+                f"Confere o número pra mim?"
+            ), extra
+
+        valor = args.get("valor")
+        try:
+            valor = float(valor) if valor not in (None, "") else None
+        except (ValueError, TypeError):
+            valor = None
+        descricao = (args.get("descricao") or "").strip() or None
+
+        try:
+            venda_id = registrar_venda(
+                clinica["id"], conversa["id"], valor=valor, descricao=descricao
+            )
+        except Exception as e:
+            return f"Erro ao registrar a venda: {e}", extra
+
+        extra["venda_registrada_id"] = venda_id
+
+        # Dispara Purchase pra Meta (se CAPI ativo e o lead veio de anúncio).
+        if clinica.get("capi_ativo"):
+            custom = {"value": valor, "currency": "BRL"} if valor is not None else None
+            capi.enviar_evento(
+                clinica, conversa, "Purchase", f"purchase:{venda_id}",
+                custom_data=custom
+            )
+
+        valor_txt = ""
+        if valor is not None:
+            valor_txt = f" no valor de R$ {valor:.2f}".replace(".", ",")
+        return (
+            f"Venda registrada{valor_txt} pro contato {numero} (ID {venda_id}). "
+            f"Confirme isso ao dono de forma curta e direta."
+        ), extra
+
     elif nome == "verificar_disponibilidade":
         # Reutiliza a mesma lógica da Ana com lead
         return _executar_ferramenta("verificar_disponibilidade", args, clinica, None, None)
@@ -1109,10 +1190,12 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
 
     Se modo_dono=True, usa prompt e ferramentas de "assistente executiva do dono".
 
-    Retorna uma tupla (texto_resposta, lista_de_agendamentos_criados).
+    Retorna (texto_resposta, lista_de_agendamentos_criados, meta), onde meta é um
+    dict com sinais pro rastreamento (ex: consultou_disponibilidade → evento Lead).
     """
     messages = list(historico)
     messages.append({"role": "user", "content": mensagem_atual})
+    meta = {"consultou_disponibilidade": False}
 
     if modo_dono:
         # Modo dono: prompt fixo de assistente executiva + ferramentas administrativas
@@ -1160,11 +1243,11 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
             r = requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=45)
             if r.status_code != 200:
                 print(f"❌ Claude retornou {r.status_code}: {r.text}")
-                return None, agendamentos_criados
+                return None, agendamentos_criados, meta
             data = r.json()
         except Exception as e:
             print(f"❌ Erro ao chamar Claude: {e}")
-            return None, agendamentos_criados
+            return None, agendamentos_criados, meta
 
         stop_reason = data.get("stop_reason")
         content = data.get("content", [])
@@ -1181,6 +1264,9 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
                 args = bloco.get("input", {})
                 modo_label = "DONO" if modo_dono else "LEAD"
                 print(f"🔧 [{modo_label}] Ana chamou: {nome_tool}({args})")
+                # Sinal de qualificação (evento Lead): lead pediu pra ver horários.
+                if not modo_dono and nome_tool == "verificar_disponibilidade":
+                    meta["consultou_disponibilidade"] = True
                 resultado, extra = executar_func(nome_tool, args)
                 print(f"   → {resultado[:120]}")
                 if "agendamento_criado_id" in extra:
@@ -1195,10 +1281,10 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
             continue
 
         textos = [b["text"] for b in content if b.get("type") == "text"]
-        return ("\n".join(textos).strip(), agendamentos_criados)
+        return ("\n".join(textos).strip(), agendamentos_criados, meta)
 
     print("⚠️ Loop de tool use excedeu 5 tentativas.")
-    return None, agendamentos_criados
+    return None, agendamentos_criados, meta
 
 
 # ============================================================
@@ -1405,7 +1491,7 @@ def processar_mensagem_em_background(
         print(f"🟢 [BG] Histórico carregado: {len(historico_base)} mensagens. Chamando Claude...")
 
         # 4) Gera resposta. Passa flag modo_dono.
-        resposta_completa, agendamentos = gerar_resposta_ia(
+        resposta_completa, agendamentos, meta_ia = gerar_resposta_ia(
             clinica["system_prompt"], historico_base, texto_recebido,
             clinica=clinica, conversa_id=conversa_id, numero_lead=numero_lead,
             modo_dono=modo_dono
@@ -1444,6 +1530,25 @@ def processar_mensagem_em_background(
         if not modo_dono:
             for ag in agendamentos:
                 notificar_agendamento_para_responsavel(clinica, ag, numero_lead)
+
+        # 8) Rastreamento de conversões (CAPI). Só toca no banco/rede se o tenant
+        # tem CAPI ativo e é conversa de lead. enviar_evento é no-op sem ctwa_clid
+        # e faz dedup — pode ser chamado à vontade, nunca quebra o atendimento.
+        if not modo_dono and clinica.get("capi_ativo"):
+            conversa = obter_conversa(conversa_id)
+            # Lead veio de anúncio → conversa iniciada (evento padrão Contact).
+            capi.enviar_evento(clinica, conversa, "Contact",
+                               f"contact:{conversa_id}")
+            # Lead qualificado → pediu pra ver horários nesta conversa.
+            if meta_ia.get("consultou_disponibilidade"):
+                capi.enviar_evento(clinica, conversa, "Lead",
+                                   f"lead:{conversa_id}")
+            # Agendamento(s) gravado(s) nesta rodada.
+            for ag in agendamentos:
+                ag_id = ag.get("agendamento_criado_id")
+                if ag_id:
+                    capi.enviar_evento(clinica, conversa, "Schedule",
+                                       f"schedule:{ag_id}")
 
     except Exception as e:
         import traceback
@@ -1505,6 +1610,10 @@ def receive_message():
                         print(f"⏭️  Mensagem {message_id} já processada.")
                         continue
 
+                    # Atribuição de anúncio (click-to-WhatsApp): vem junto da
+                    # mensagem quando o lead chegou por um anúncio. Capturamos SEMPRE.
+                    referral = message.get("referral")
+
                     if msg_type == "text":
                         texto = message.get("text", {}).get("body", "")
                         print(f"\n📨 [{clinica['nome']}] {sender}: {texto}")
@@ -1512,6 +1621,9 @@ def receive_message():
                         conversa_id = obter_ou_criar_conversa(
                             clinica["id"], sender
                         )
+                        if referral:
+                            salvar_referral_conversa(conversa_id, referral)
+                            print(f"🎯 Referral capturado (ctwa_clid={referral.get('ctwa_clid')})")
 
                         # Dispara processamento em segundo plano (texto).
                         threading.Thread(
@@ -1538,6 +1650,9 @@ def receive_message():
                         conversa_id = obter_ou_criar_conversa(
                             clinica["id"], sender
                         )
+                        if referral:
+                            salvar_referral_conversa(conversa_id, referral)
+                            print(f"🎯 Referral capturado (ctwa_clid={referral.get('ctwa_clid')})")
 
                         # Dispara processamento em segundo plano (áudio → transcrição → resposta).
                         threading.Thread(

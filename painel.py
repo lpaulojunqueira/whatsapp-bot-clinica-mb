@@ -12,6 +12,7 @@ Multi-tenant: admin (sem clinica_id) vê tudo; usuário comum vê só a clínica
 
 import os
 import requests
+import threading
 from functools import wraps
 from flask import (
     request, jsonify, session, redirect, url_for, render_template_string
@@ -48,7 +49,10 @@ from db import (
     obter_profissional,
     criar_profissional,
     atualizar_profissional,
+    obter_conversa,
+    registrar_venda,
 )
+import capi
 
 
 # ============================================================
@@ -1061,7 +1065,10 @@ PAINEL_HTML = """
             <div class="sub" id="det-sub">—</div>
           </div>
         </div>
-        <button class="btn" id="btn-acao" onclick="alternarPausa()">—</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn btn-pequeno" id="btn-venda" onclick="abrirModalVenda()">Registrar venda</button>
+          <button class="btn" id="btn-acao" onclick="alternarPausa()">—</button>
+        </div>
       </div>
       <div class="mensagens" id="mensagens" style="display:none"></div>
       <div class="aviso" id="aviso-pausada" style="display:none">
@@ -1159,6 +1166,33 @@ PAINEL_HTML = """
       </div>
       <div class="agenda-modal-body" id="ag-modal-body"></div>
       <div class="agenda-modal-rodape" id="ag-modal-rodape"></div>
+    </div>
+  </div>
+
+  <!-- Modal de registrar venda (dispara Purchase) -->
+  <div id="venda-modal" class="agenda-modal" style="display:none">
+    <div class="agenda-modal-conteudo">
+      <div class="agenda-modal-topo">
+        <div class="agenda-modal-titulo">Registrar venda</div>
+        <button type="button" class="agenda-modal-fechar" onclick="fecharModalVenda()"
+                aria-label="Fechar">×</button>
+      </div>
+      <div class="agenda-modal-body">
+        <div class="ag-form">
+          <label>Valor (R$) <span style="text-transform:none; font-weight:400">— recomendado pra otimizar por ROAS</span></label>
+          <input type="number" id="venda-valor" step="0.01" min="0" placeholder="Ex: 3000">
+          <label>Descrição <span style="text-transform:none; font-weight:400">— opcional</span></label>
+          <input type="text" id="venda-descricao" placeholder="Ex: contrato fechado, plano X">
+        </div>
+        <div style="font-size:12px; color:var(--cinza-texto); margin-top:2px;">
+          Registra o fecho e, se o rastreamento Meta estiver ativo e o lead veio de anúncio,
+          dispara o evento de conversão (Purchase) pra Meta.
+        </div>
+      </div>
+      <div class="agenda-modal-rodape">
+        <button type="button" class="btn btn-pequeno" onclick="fecharModalVenda()">Cancelar</button>
+        <button type="button" class="btn btn-verde" onclick="salvarVenda()">Registrar</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1382,6 +1416,36 @@ async function alternarPausa() {
   await fetch('/painel/api/conversas/' + conversaSelecionada + '/alternar-pausa',
               { method: 'POST' });
   abrirConversa(conversaSelecionada);
+}
+
+// ============ REGISTRAR VENDA (evento Purchase) ============
+function abrirModalVenda() {
+  if (!conversaSelecionada) return;
+  document.getElementById('venda-valor').value = '';
+  document.getElementById('venda-descricao').value = '';
+  document.getElementById('venda-modal').style.display = 'flex';
+}
+
+function fecharModalVenda() {
+  document.getElementById('venda-modal').style.display = 'none';
+}
+
+async function salvarVenda() {
+  if (!conversaSelecionada) return;
+  const valorStr = document.getElementById('venda-valor').value.trim();
+  const descricao = document.getElementById('venda-descricao').value.trim();
+  const r = await fetch('/painel/api/conversas/' + conversaSelecionada + '/venda', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ valor: valorStr || null, descricao })
+  });
+  if (r.ok) {
+    fecharModalVenda();
+    alert('Venda registrada.');
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert('Erro: ' + (d.erro || 'falha ao registrar'));
+  }
 }
 
 async function enviarMsg(e) {
@@ -2620,7 +2684,29 @@ ADMIN_HTML = """
       <label>Prompt da Ana</label>
       <textarea id="ed-prompt" style="min-height:200px"></textarea>
 
-      <div style="display:flex; gap:10px; justify-content:flex-end;">
+      <div style="margin-top:8px; padding-top:16px; border-top:1px solid var(--cinza-borda);">
+        <div style="font-size:14px; font-weight:600; margin-bottom:4px;">Rastreamento Meta (Conversions API)</div>
+        <div class="card-sub" style="margin-bottom:14px;">
+          Envia conversões (lead, agendamento) pra Meta atribuir aos anúncios click-to-WhatsApp.
+          Deixe desativado e/ou em branco pra não rastrear este cliente.
+        </div>
+
+        <label>Dataset ID <span class="label-dica">— do Gerenciador de Eventos da conta que roda os anúncios</span></label>
+        <input type="text" id="ed-meta-dataset" placeholder="Ex: 1234567890123456" autocomplete="off">
+
+        <label>Token da Conversions API <span class="label-dica">— token de acesso do dataset (secreto)</span></label>
+        <input type="password" id="ed-meta-token" placeholder="Deixe em branco pra manter o atual" autocomplete="off">
+
+        <label>Test Event Code <span class="label-dica">— opcional, só pra validar no Gerenciador de Eventos antes de produção</span></label>
+        <input type="text" id="ed-meta-testcode" placeholder="Ex: TEST12345" autocomplete="off">
+
+        <label style="display:inline-flex; align-items:center; gap:8px; font-weight:400; cursor:pointer; margin-top:4px;">
+          <input type="checkbox" id="ed-capi-ativo" style="width:auto; margin:0;">
+          Rastreamento ativo para este cliente
+        </label>
+      </div>
+
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:16px;">
         <button type="button" class="btn btn-pequeno" onclick="fecharEdicaoCliente()">Cancelar</button>
         <button type="submit" class="btn btn-verde">Salvar mudanças</button>
       </div>
@@ -2800,6 +2886,11 @@ async function abrirEdicaoCliente(clinicaId) {
   document.getElementById('ed-token').value = c.whatsapp_token || '';
   document.getElementById('ed-fone-humano').value = c.telefone_humano || '';
   document.getElementById('ed-prompt').value = c.system_prompt || '';
+  // Rastreamento Meta. O token NÃO é pré-preenchido (fica em branco = mantém o atual).
+  document.getElementById('ed-meta-dataset').value = c.meta_dataset_id || '';
+  document.getElementById('ed-meta-token').value = '';
+  document.getElementById('ed-meta-testcode').value = c.meta_test_event_code || '';
+  document.getElementById('ed-capi-ativo').checked = !!c.capi_ativo;
   document.getElementById('modal-edicao').style.display = 'flex';
 }
 
@@ -2816,7 +2907,14 @@ async function salvarEdicaoCliente(e) {
     whatsapp_token: document.getElementById('ed-token').value.trim(),
     telefone_humano: document.getElementById('ed-fone-humano').value.trim(),
     system_prompt: document.getElementById('ed-prompt').value.trim(),
+    meta_dataset_id: document.getElementById('ed-meta-dataset').value.trim(),
+    meta_test_event_code: document.getElementById('ed-meta-testcode').value.trim(),
+    capi_ativo: document.getElementById('ed-capi-ativo').checked,
   };
+  // Token só vai se foi digitado (em branco = mantém o atual, não apaga).
+  const metaToken = document.getElementById('ed-meta-token').value.trim();
+  if (metaToken) body.meta_capi_token = metaToken;
+
   const r = await fetch('/painel/admin/clinicas/' + id, {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
@@ -3195,6 +3293,47 @@ def registrar_rotas(app):
         salvar_mensagem(conversa_id, "assistant", texto)
         return jsonify({"ok": True})
 
+    @app.route("/painel/api/conversas/<int:conversa_id>/venda", methods=["POST"])
+    @login_required
+    def api_registrar_venda(conversa_id):
+        """Registra uma venda (fecho) numa conversa e dispara o evento Purchase
+        pra Meta (se o tenant tiver CAPI ativo e o lead veio de anúncio)."""
+        data = buscar_conversa_completa(conversa_id)
+        if not data:
+            return jsonify({"erro": "nao encontrada"}), 404
+        if session.get("clinica_id") is not None:
+            if data["info"]["clinica_id"] != session["clinica_id"]:
+                return jsonify({"erro": "sem permissao"}), 403
+
+        body = request.get_json() or {}
+        valor = body.get("valor")
+        try:
+            valor = float(valor) if valor not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"erro": "valor inválido"}), 400
+        if valor is not None and valor < 0:
+            return jsonify({"erro": "valor inválido"}), 400
+        descricao = (body.get("descricao") or "").strip() or None
+
+        clinica_id = data["info"]["clinica_id"]
+        venda_id = registrar_venda(clinica_id, conversa_id,
+                                   valor=valor, descricao=descricao)
+
+        # Dispara Purchase em thread — não segura a resposta do painel, e falha
+        # de CAPI nunca afeta o registro da venda (que já está salvo no banco).
+        clinica = obter_clinica(clinica_id)
+        if clinica and clinica.get("capi_ativo"):
+            conversa = obter_conversa(conversa_id)
+            custom = {"value": valor, "currency": "BRL"} if valor is not None else None
+            threading.Thread(
+                target=capi.enviar_evento,
+                args=(clinica, conversa, "Purchase", f"purchase:{venda_id}"),
+                kwargs={"custom_data": custom},
+                daemon=True
+            ).start()
+
+        return jsonify({"ok": True, "venda_id": venda_id})
+
     # ---------- Admin: criar usuário pra clínica ----------
     @app.route("/painel/admin/usuarios", methods=["GET"])
     @login_required
@@ -3311,6 +3450,10 @@ def registrar_rotas(app):
                 telefone_humano=body.get("telefone_humano"),
                 whatsapp_token=body.get("whatsapp_token"),
                 system_prompt=body.get("system_prompt"),
+                meta_dataset_id=body.get("meta_dataset_id"),
+                meta_capi_token=body.get("meta_capi_token"),
+                capi_ativo=body.get("capi_ativo"),
+                meta_test_event_code=body.get("meta_test_event_code"),
             )
             return jsonify({"ok": True})
         except Exception as e:
