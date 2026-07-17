@@ -41,6 +41,7 @@ from db import (
     criar_agendamento,
     remarcar_agendamento,
     atualizar_agendamento,
+    existe_conflito,
     criar_bloqueio,
     listar_profissionais,
     contar_profissionais_ativos,
@@ -1843,11 +1844,23 @@ function dtLocalValor(dtStr) {
 function editarAgendamentoModal() {
   const ag = agAtual;
   if (!ag) return;
+  const temProfs = agendaProfissionais.length > 0;
+  // Seletor de profissional (só multi). Pré-seleciona o profissional atual.
+  const selProf = temProfs ? `
+      <label>Profissional</label>
+      <select id="ed-ag-prof">
+        <option value="">— Selecione —</option>
+        ${agendaProfissionais.map(p =>
+          `<option value="${p.id}" ${p.id === ag.profissional_id ? 'selected' : ''}>${escapar(p.nome)}</option>`
+        ).join('')}
+      </select>` : '';
+
   document.getElementById('ag-modal-titulo').textContent = 'Editar agendamento';
   document.getElementById('ag-modal-body').innerHTML = `
     <div class="ag-form">
       <label>Nome do paciente</label>
       <input type="text" id="ed-ag-nome" value="${escaparAttr(ag.nome_lead || '')}">
+      ${selProf}
       <label>Data e horário</label>
       <input type="datetime-local" id="ed-ag-datahora" value="${dtLocalValor(ag.data_hora)}">
       <label>Motivo</label>
@@ -1868,14 +1881,21 @@ async function salvarEdicaoAgendamento() {
   if (nome.length < 3) { alert('Informe o nome do paciente.'); return; }
   if (!dataHora) { alert('Informe a data e o horário.'); return; }
 
+  const body = {
+    nome_lead: nome,
+    observacao: document.getElementById('ed-ag-motivo').value.trim(),
+    data_hora: dataHora.substring(0, 16),
+  };
+  const profEl = document.getElementById('ed-ag-prof');
+  if (profEl) {
+    if (!profEl.value) { alert('Selecione o profissional.'); return; }
+    body.profissional_id = parseInt(profEl.value, 10);
+  }
+
   const r = await fetch('/painel/api/agendamentos/' + agAtual.id, {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      nome_lead: nome,
-      observacao: document.getElementById('ed-ag-motivo').value.trim(),
-      data_hora: dataHora.substring(0, 16),
-    })
+    body: JSON.stringify(body)
   });
   if (r.ok) {
     fecharModalAgenda();
@@ -3612,7 +3632,9 @@ def registrar_rotas(app):
     @app.route("/painel/api/agendamentos/<int:agendamento_id>", methods=["PATCH"])
     @login_required
     def api_editar_agendamento(agendamento_id):
-        """Edita agendamento: nome, motivo e/ou data_hora (remarca com anti-conflito)."""
+        """Edita agendamento: nome, motivo, data_hora e/ou profissional.
+        Trocar de profissional move o agendamento pra agenda do novo profissional,
+        validando que ele está livre naquele horário."""
         ag = obter_agendamento(agendamento_id)
         if not ag:
             return jsonify({"erro": "agendamento não encontrado"}), 404
@@ -3622,12 +3644,39 @@ def registrar_rotas(app):
 
         body = request.get_json() or {}
 
-        # Remarca primeiro: se o novo horário conflitar, nada é alterado.
+        # Profissional de destino (só faz sentido em clínica multi).
+        # "profissional_id" presente no body = intenção de definir/trocar.
+        prof_novo = ag["profissional_id"]
+        if "profissional_id" in body:
+            prof_novo, erro_prof = _resolver_prof_body(
+                ag["clinica_id"], body, obrigatorio=True
+            )
+            if erro_prof:
+                return erro_prof
+        mudou_prof = ("profissional_id" in body) and (prof_novo != ag["profissional_id"])
+
+        # Nova data/hora (opcional).
         nova_data = body.get("data_hora")
+        dt = None
         if nova_data:
             dt = _parse_dt_brasil(nova_data)
             if not dt:
                 return jsonify({"erro": "data/hora inválida"}), 400
+
+        if mudou_prof:
+            # Troca de profissional (com ou sem mudança de horário): checa a agenda
+            # do profissional de DESTINO no horário alvo antes de mover.
+            tempo_alvo = dt or ag["data_hora"]
+            if existe_conflito(ag["clinica_id"], tempo_alvo, ag["duracao_minutos"],
+                               ignorar_id=agendamento_id, profissional_id=prof_novo):
+                return jsonify({
+                    "erro": "esse horário já está ocupado na agenda desse profissional"
+                }), 409
+            atualizar_agendamento(agendamento_id, profissional_id=prof_novo,
+                                  data_hora=tempo_alvo)
+        elif dt:
+            # Só mudou o horário (mesmo profissional): remarcar valida o conflito
+            # na agenda do próprio profissional.
             try:
                 remarcar_agendamento(agendamento_id, dt)
             except ValueError as e:

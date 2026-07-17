@@ -1150,11 +1150,15 @@ def remarcar_agendamento(agendamento_id, nova_data_hora):
     return True
 
 
-def atualizar_agendamento(agendamento_id, nome_lead=None, observacao=None):
+def atualizar_agendamento(agendamento_id, nome_lead=None, observacao=None,
+                          data_hora=None, profissional_id=None):
     """
-    Atualiza campos editáveis de um agendamento (nome e/ou observação).
-    Passar None mantém o valor atual. Pra mudar data_hora use remarcar_agendamento
-    (que valida anti-conflito). Retorna True se o agendamento existia.
+    Atualiza campos editáveis de um agendamento. Passar None mantém o valor atual.
+
+    NÃO valida anti-conflito — quem chama é responsável por checar (ex: o endpoint
+    de edição valida a agenda do profissional de destino antes de trocar). Pra
+    mudança simples de horário (mesmo profissional) prefira remarcar_agendamento,
+    que já valida. Retorna True se o agendamento existia.
     """
     campos = []
     valores = []
@@ -1164,6 +1168,12 @@ def atualizar_agendamento(agendamento_id, nome_lead=None, observacao=None):
     if observacao is not None:
         campos.append("observacao = %s")
         valores.append((observacao or "").strip() or None)
+    if data_hora is not None:
+        campos.append("data_hora = %s")
+        valores.append(data_hora)
+    if profissional_id is not None:
+        campos.append("profissional_id = %s")
+        valores.append(profissional_id)
 
     if not campos:
         return True
