@@ -42,6 +42,11 @@ from db import (
     remarcar_agendamento,
     atualizar_agendamento,
     criar_bloqueio,
+    listar_profissionais,
+    contar_profissionais_ativos,
+    obter_profissional,
+    criar_profissional,
+    atualizar_profissional,
 )
 
 
@@ -826,6 +831,14 @@ PAINEL_HTML = """
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .agenda-bloco .bloco-prof {
+    font-size: 9px;
+    opacity: 0.9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+  }
   .agenda-bloco.bloco-bloqueio {
     background: #FCA5A5;
     color: #7F1D1D;
@@ -1091,12 +1104,24 @@ PAINEL_HTML = """
         </button>
       </div>
 
+      <div id="agenda-filtro-prof-wrap" style="display:none; padding:12px 20px; border-bottom:1px solid var(--cinza-borda);">
+        <div class="label" style="font-size:11px; font-weight:600; color:var(--cinza-fraco); text-transform:uppercase; letter-spacing:0.6px; margin-bottom:6px;">Profissional</div>
+        <select id="agenda-filtro-prof" onchange="renderizarAgenda()"
+                style="width:100%; padding:8px 10px; border:1.5px solid var(--cinza-borda);
+                       border-radius:8px; font-family:inherit; font-size:14px; font-weight:600;
+                       color:var(--carvao); background:#fff; cursor:pointer;">
+          <option value="">Todos os profissionais</option>
+        </select>
+      </div>
+
       <div class="agenda-legenda">
         <div class="legenda-item"><span class="legenda-cor cor-confirmado"></span> Agendamento</div>
         <div class="legenda-item"><span class="legenda-cor cor-bloqueio"></span> Bloqueio</div>
         <div class="legenda-item"><span class="legenda-cor cor-livre"></span> Livre</div>
         <div class="legenda-item"><span class="legenda-cor cor-fora"></span> Fora do expediente</div>
       </div>
+
+      <div id="agenda-legenda-prof" class="agenda-legenda" style="display:none; border-top:1px dashed var(--cinza-borda);"></div>
 
       <div class="agenda-resumo" id="agenda-resumo"></div>
     </aside>
@@ -1414,7 +1439,19 @@ let agendaClinicaId = null;   // clínica selecionada (null = nenhuma)
 let agendaSemanaInicio = null; // Date do domingo da semana atual
 let agendaConfig = null;
 let agendaDados = null;
+let agendaProfissionais = [];  // profissionais ativos da clínica atual
 let agendaInicializada = false;
+
+// Paleta estável de cores por profissional (id -> cor)
+const CORES_PROFISSIONAL = [
+  '#2563EB', '#7C3AED', '#DB2777', '#059669',
+  '#D97706', '#0891B2', '#4F46E5', '#BE123C'
+];
+function corDoProfissional(profId) {
+  if (!profId) return '#1FBE82';  // sem profissional = verde padrão
+  const idx = agendaProfissionais.findIndex(p => p.id === profId);
+  return CORES_PROFISSIONAL[(idx >= 0 ? idx : profId) % CORES_PROFISSIONAL.length];
+}
 
 function inicializarAgendaSePreciso() {
   if (agendaInicializada) return;
@@ -1515,11 +1552,46 @@ async function carregarAgenda() {
     if (!r.ok) throw new Error('Falha ao carregar');
     agendaDados = await r.json();
     agendaConfig = agendaDados.config;
+    agendaProfissionais = agendaDados.profissionais || [];
+    montarFiltroProfissionais();
     renderizarAgenda();
   } catch (e) {
     document.getElementById('agenda-container').innerHTML =
       '<div class="agenda-vazio"><div class="agenda-vazio-titulo">Erro ao carregar agenda</div><div class="agenda-vazio-sub">Tenta atualizar a página.</div></div>';
   }
+}
+
+// Popula o filtro de profissional + legenda de cores (só se a clínica tiver).
+// Chamado a cada carga de dados; preserva a seleção atual do filtro.
+function montarFiltroProfissionais() {
+  const wrap = document.getElementById('agenda-filtro-prof-wrap');
+  const sel = document.getElementById('agenda-filtro-prof');
+  const legenda = document.getElementById('agenda-legenda-prof');
+  if (agendaProfissionais.length === 0) {
+    wrap.style.display = 'none';
+    legenda.style.display = 'none';
+    sel.value = '';
+    return;
+  }
+  const anterior = sel.value;
+  sel.innerHTML = '<option value="">Todos os profissionais</option>' +
+    agendaProfissionais.map(p => `<option value="${p.id}">${escapar(p.nome)}</option>`).join('');
+  // Só mantém a seleção se o profissional ainda existir
+  sel.value = agendaProfissionais.some(p => String(p.id) === anterior) ? anterior : '';
+  wrap.style.display = 'block';
+
+  legenda.innerHTML = agendaProfissionais.map(p => `
+    <div class="legenda-item">
+      <span class="legenda-cor" style="background:${corDoProfissional(p.id)}"></span>
+      ${escapar(p.nome)}
+    </div>`).join('');
+  legenda.style.display = 'flex';
+}
+
+function agendaFiltroProfId() {
+  const sel = document.getElementById('agenda-filtro-prof');
+  const v = sel ? sel.value : '';
+  return v ? parseInt(v, 10) : null;
 }
 
 function renderizarAgenda() {
@@ -1619,11 +1691,15 @@ function colocarBlocosAgenda(horaGridInicio) {
     return dif;
   };
 
+  const filtroProf = agendaFiltroProfId();  // null = todos
+  const temProfs = agendaProfissionais.length > 0;
+
   ags.forEach(a => {
+    // Filtro por profissional (agendamento sem profissional aparece em qualquer filtro).
+    if (filtroProf && a.profissional_id && a.profissional_id !== filtroProf) return;
     const col = colDoDia(a.data_hora);
     if (col < 0 || col > 6) return;
     const pos = posicionar(a.data_hora, a.duracao_minutos || 60, col);
-    const classe = a.origem === 'manual' ? 'bloco-manual' : '';
     const dt = new Date(a.data_hora);
     const hh = String(dt.getHours()).padStart(2,'0');
     const mm = String(dt.getMinutes()).padStart(2,'0');
@@ -1632,20 +1708,33 @@ function colocarBlocosAgenda(horaGridInicio) {
     );
     if (!celula) return;
     const bloco = document.createElement('div');
-    bloco.className = `agenda-bloco ${classe}`;
+    bloco.className = 'agenda-bloco';
+    // Cor por profissional (multi); fallback pro esquema antigo (verde/azul manual).
+    if (temProfs) {
+      bloco.style.background = corDoProfissional(a.profissional_id);
+    } else if (a.origem === 'manual') {
+      bloco.classList.add('bloco-manual');
+    }
     const offsetMin = dt.getMinutes();
     const offsetTop = (offsetMin / 60) * alturaLinha;
     bloco.style.top = offsetTop + 'px';
     bloco.style.height = pos.altura + 'px';
+    // Rótulo do profissional (curto) quando a clínica é multi.
+    const rotuloProf = (temProfs && a.profissional_nome)
+      ? `<div class="bloco-prof">${escapar(a.profissional_nome)}</div>` : '';
     bloco.innerHTML = `
       <div class="bloco-hora">${hh}:${mm}</div>
       <div class="bloco-nome">${escapar(a.nome_lead || 'Sem nome')}</div>
+      ${rotuloProf}
     `;
     bloco.onclick = () => abrirDetalheAgendamento(a);
     celula.appendChild(bloco);
   });
 
   blqs.forEach(b => {
+    // Bloqueio de um profissional específico some quando o filtro é outro.
+    // Bloqueio geral (profissional_id null) aparece sempre.
+    if (filtroProf && b.profissional_id && b.profissional_id !== filtroProf) return;
     const dtIni = new Date(b.inicio);
     const dtFim = new Date(b.fim);
     const col = colDoDia(b.inicio);
@@ -1664,9 +1753,12 @@ function colocarBlocosAgenda(horaGridInicio) {
     const offsetTop = (offsetMin / 60) * alturaLinha;
     bloco.style.top = offsetTop + 'px';
     bloco.style.height = pos.altura + 'px';
+    const rotuloProf = (temProfs && b.profissional_nome)
+      ? `<div class="bloco-prof">${escapar(b.profissional_nome)}</div>` : '';
     bloco.innerHTML = `
       <div class="bloco-hora">${hh}:${mm}</div>
       <div class="bloco-nome">${escapar(b.motivo || 'Bloqueado')}</div>
+      ${rotuloProf}
     `;
     bloco.onclick = () => abrirDetalheBloqueio(b);
     celula.appendChild(bloco);
@@ -1715,9 +1807,13 @@ function abrirDetalheAgendamento(ag) {
   agAtual = ag;
   document.getElementById('ag-modal-titulo').textContent = 'Agendamento';
   const origemLabel = ag.origem === 'manual' ? 'Manual' : 'Ana';
+  const linhaProf = (agendaProfissionais.length > 0)
+    ? `<div class="linha"><div class="rotulo">Profissional</div><div class="valor">${escapar(ag.profissional_nome || 'Não atribuído')}</div></div>`
+    : '';
   document.getElementById('ag-modal-body').innerHTML = `
     <div class="linha"><div class="rotulo">Nome</div><div class="valor">${escapar(ag.nome_lead || '—')}</div></div>
     <div class="linha"><div class="rotulo">Telefone</div><div class="valor">${escapar(ag.numero_lead || '—')}</div></div>
+    ${linhaProf}
     <div class="linha"><div class="rotulo">Data</div><div class="valor">${fmtDataHora(ag.data_hora)}</div></div>
     <div class="linha"><div class="rotulo">Duração</div><div class="valor">${ag.duracao_minutos || 60} min</div></div>
     <div class="linha"><div class="rotulo">Origem</div><div class="valor">${origemLabel}</div></div>
@@ -1803,6 +1899,26 @@ function clicarCelulaAgenda(event, dia, hora) {
 function abrirModalCriar(dia, hora) {
   const hh = String(hora).padStart(2,'0');
   const hhFim = String(Math.min(hora + 1, 23)).padStart(2,'0');
+  const temProfs = agendaProfissionais.length > 0;
+  const filtroAtual = agendaFiltroProfId();
+
+  // Selects de profissional (só quando a clínica é multi).
+  const opcoesProf = agendaProfissionais.map(p =>
+    `<option value="${p.id}" ${p.id === filtroAtual ? 'selected' : ''}>${escapar(p.nome)}</option>`
+  ).join('');
+  const selAgProf = temProfs ? `
+        <label>Profissional</label>
+        <select id="novo-prof">
+          <option value="">— Selecione —</option>
+          ${opcoesProf}
+        </select>` : '';
+  const selBloqProf = temProfs ? `
+        <label>Profissional <span style="text-transform:none; font-weight:400">— opcional</span></label>
+        <select id="novo-bloq-prof">
+          <option value="">Toda a clínica</option>
+          ${opcoesProf}
+        </select>` : '';
+
   document.getElementById('ag-modal-titulo').textContent = 'Novo';
   document.getElementById('ag-modal-body').innerHTML = `
     <div class="ag-form">
@@ -1816,12 +1932,14 @@ function abrirModalCriar(dia, hora) {
         <input type="text" id="novo-nome" placeholder="Nome completo">
         <label>Telefone <span style="text-transform:none; font-weight:400">— opcional</span></label>
         <input type="text" id="novo-telefone" placeholder="(19) 99999-9999">
+        ${selAgProf}
         <label>Data e horário</label>
         <input type="datetime-local" id="novo-datahora" value="${dia}T${hh}:00">
         <label>Motivo <span style="text-transform:none; font-weight:400">— opcional</span></label>
         <input type="text" id="novo-motivo" placeholder="Ex: avaliação, clareamento...">
       </div>
       <div id="novo-campos-bloqueio" style="display:none">
+        ${selBloqProf}
         <label>Início</label>
         <input type="datetime-local" id="novo-bloq-inicio" value="${dia}T${hh}:00">
         <label>Fim</label>
@@ -1852,12 +1970,18 @@ async function salvarNovoAgenda() {
   const clinicaExtra = (agendaClinicaId && agendaClinicaId !== 'meu')
     ? { clinica_id: agendaClinicaId } : {};
 
+  const temProfs = agendaProfissionais.length > 0;
+
   let url, body;
   if (tipo === 'agendamento') {
     const nome = document.getElementById('novo-nome').value.trim();
     const dataHora = document.getElementById('novo-datahora').value;
     if (nome.length < 3) { alert('Informe o nome do paciente.'); return; }
     if (!dataHora) { alert('Informe a data e o horário.'); return; }
+    const profEl = document.getElementById('novo-prof');
+    if (temProfs && (!profEl || !profEl.value)) {
+      alert('Selecione o profissional.'); return;
+    }
     url = '/painel/api/agendamentos';
     body = {
       ...clinicaExtra,
@@ -1866,6 +1990,7 @@ async function salvarNovoAgenda() {
       data_hora: dataHora.substring(0, 16),
       observacao: document.getElementById('novo-motivo').value.trim(),
     };
+    if (profEl && profEl.value) body.profissional_id = parseInt(profEl.value, 10);
   } else {
     const inicio = document.getElementById('novo-bloq-inicio').value;
     const fim = document.getElementById('novo-bloq-fim').value;
@@ -1877,6 +2002,8 @@ async function salvarNovoAgenda() {
       fim: fim.substring(0, 16),
       motivo: document.getElementById('novo-bloq-motivo').value.trim(),
     };
+    const bprofEl = document.getElementById('novo-bloq-prof');
+    if (bprofEl && bprofEl.value) body.profissional_id = parseInt(bprofEl.value, 10);
   }
 
   const r = await fetch(url, {
@@ -1897,8 +2024,12 @@ function abrirDetalheBloqueio(b) {
   document.getElementById('ag-modal-titulo').textContent = 'Bloqueio';
   const dtIni = new Date(b.inicio);
   const dtFim = new Date(b.fim);
+  const linhaProfB = (agendaProfissionais.length > 0)
+    ? `<div class="linha"><div class="rotulo">Profissional</div><div class="valor">${escapar(b.profissional_nome || 'Toda a clínica')}</div></div>`
+    : '';
   document.getElementById('ag-modal-body').innerHTML = `
     <div class="linha"><div class="rotulo">Motivo</div><div class="valor">${escapar(b.motivo || '—')}</div></div>
+    ${linhaProfB}
     <div class="linha"><div class="rotulo">Início</div><div class="valor">${fmtDataHora(b.inicio)}</div></div>
     <div class="linha"><div class="rotulo">Fim</div><div class="valor">${fmtDataHora(b.fim)}</div></div>
     <div class="linha"><div class="rotulo">Duração</div><div class="valor">${Math.round((dtFim-dtIni)/60000)} min</div></div>
@@ -2222,6 +2353,7 @@ ADMIN_HTML = """
     <button class="aba ativa" data-aba="clinicas" onclick="trocarAba('clinicas')">Clientes</button>
     <button class="aba" data-aba="usuarios" onclick="trocarAba('usuarios')">Usuários</button>
     <button class="aba" data-aba="prompts" onclick="trocarAba('prompts')">Prompts da Ana</button>
+    <button class="aba" data-aba="profissionais" onclick="trocarAba('profissionais')">Profissionais</button>
     <button class="aba" data-aba="horarios" onclick="trocarAba('horarios')">Horários</button>
   </div>
 
@@ -2315,6 +2447,42 @@ ADMIN_HTML = """
     </div>
   </div>
 
+  <!-- ============ ABA PROFISSIONAIS ============ -->
+  <div class="secao" id="sec-profissionais">
+    <div class="card">
+      <div class="card-titulo">Profissionais da clínica</div>
+      <div class="card-sub">
+        Cadastre os profissionais quando a clínica tiver mais de um (ex: dois
+        dentistas com especialidades diferentes). Cada profissional ganha agenda
+        e horários próprios, e a Ana marca no profissional certo conforme o prompt.
+        <strong>Clínica sem profissionais cadastrados funciona no modo agenda única
+        (como antes)</strong> — só cadastre se realmente houver mais de um.
+      </div>
+
+      <label>Selecione o cliente</label>
+      <select id="pf-clinica" onchange="carregarProfissionais()">
+        <option value="">— Selecione —</option>
+      </select>
+
+      <div id="pf-editor" style="display:none; margin-top:16px;">
+        <div id="pf-lista"></div>
+
+        <div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--cinza-divisor);">
+          <label>Adicionar profissional</label>
+          <div class="row" style="align-items:flex-end;">
+            <div>
+              <input type="text" id="pf-novo-nome" placeholder="Ex: Dr. Matheus, Dra. Maryah..."
+                     style="margin-bottom:0;">
+            </div>
+            <div style="flex:0 0 auto;">
+              <button class="btn btn-verde" type="button" onclick="adicionarProfissional()">Adicionar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ ABA HORÁRIOS ============ -->
   <div class="secao" id="sec-horarios">
     <div class="card">
@@ -2325,9 +2493,18 @@ ADMIN_HTML = """
       </div>
 
       <label>Selecione o cliente</label>
-      <select id="hr-clinica" onchange="carregarHorarios()">
+      <select id="hr-clinica" onchange="aoTrocarClinicaHorarios()">
         <option value="">— Selecione —</option>
       </select>
+
+      <div id="hr-prof-wrap" style="display:none;">
+        <label>Profissional
+          <span class="label-dica">— cada um pode ter horário próprio</span>
+        </label>
+        <select id="hr-profissional" onchange="carregarHorarios()">
+          <option value="">Padrão da clínica</option>
+        </select>
+      </div>
 
       <div id="hr-editor" style="display:none; margin-top: 16px;">
         <label>Dias da semana atendidos</label>
@@ -2443,7 +2620,103 @@ function trocarAba(nome) {
   limparMsg();
   if (nome === 'usuarios') carregarClinicasSelect('us-clinica');
   if (nome === 'prompts') carregarClinicasSelect('pr-clinica');
+  if (nome === 'profissionais') carregarClinicasSelect('pf-clinica');
   if (nome === 'horarios') carregarClinicasSelect('hr-clinica');
+}
+
+// ============ PROFISSIONAIS ============
+async function carregarProfissionais() {
+  const clinicaId = document.getElementById('pf-clinica').value;
+  const editor = document.getElementById('pf-editor');
+  if (!clinicaId) { editor.style.display = 'none'; return; }
+
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/profissionais');
+  if (!r.ok) { mostrarMsg('Erro ao carregar profissionais.', 'erro'); return; }
+  const profs = await r.json();
+
+  const lista = document.getElementById('pf-lista');
+  if (profs.length === 0) {
+    lista.innerHTML = '<p style="color:#9CA3AF; font-size:13px;">' +
+      'Nenhum profissional cadastrado. A clínica opera no modo agenda única.</p>';
+  } else {
+    lista.innerHTML = `
+      <table>
+        <thead><tr><th>Profissional</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${profs.map(p => `
+            <tr>
+              <td><strong>${escapar(p.nome)}</strong></td>
+              <td>${p.ativo
+                ? '<span style="color:var(--verde-escuro); font-weight:600;">Ativo</span>'
+                : '<span style="color:var(--cinza-fraco);">Inativo</span>'}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="btn btn-pequeno" onclick="renomearProfissional(${p.id}, '${escaparAttr(p.nome)}')">Renomear</button>
+                <button class="btn btn-pequeno" onclick="alternarAtivoProfissional(${p.id}, ${p.ativo ? 'false' : 'true'})">
+                  ${p.ativo ? 'Desativar' : 'Reativar'}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+  editor.style.display = 'block';
+}
+
+async function adicionarProfissional() {
+  const clinicaId = document.getElementById('pf-clinica').value;
+  const nome = document.getElementById('pf-novo-nome').value.trim();
+  if (!clinicaId) return;
+  if (nome.length < 2) { mostrarMsg('Informe o nome do profissional.', 'erro'); return; }
+  const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/profissionais', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ nome })
+  });
+  if (r.ok) {
+    document.getElementById('pf-novo-nome').value = '';
+    mostrarMsg('Profissional <strong>' + escapar(nome) + '</strong> cadastrado.', 'sucesso');
+    carregarProfissionais();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    mostrarMsg('Erro: ' + (data.erro || 'falha'), 'erro');
+  }
+}
+
+async function renomearProfissional(id, nomeAtual) {
+  const novo = prompt('Novo nome do profissional:', nomeAtual);
+  if (novo === null) return;
+  if (novo.trim().length < 2) { mostrarMsg('Nome inválido.', 'erro'); return; }
+  const r = await fetch('/painel/admin/profissionais/' + id, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ nome: novo.trim() })
+  });
+  if (r.ok) { carregarProfissionais(); }
+  else {
+    const data = await r.json().catch(() => ({}));
+    mostrarMsg('Erro: ' + (data.erro || 'falha'), 'erro');
+  }
+}
+
+async function alternarAtivoProfissional(id, novoAtivo) {
+  const acao = novoAtivo ? 'reativar' : 'desativar';
+  if (!confirm('Confirma ' + acao + ' esse profissional?')) return;
+  const r = await fetch('/painel/admin/profissionais/' + id, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ ativo: novoAtivo })
+  });
+  if (r.ok) { carregarProfissionais(); }
+  else {
+    const data = await r.json().catch(() => ({}));
+    mostrarMsg('Erro: ' + (data.erro || 'falha'), 'erro');
+  }
+}
+
+function escaparAttr(s) {
+  return (s || '').toString()
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ============ MENSAGENS ============
@@ -2650,6 +2923,34 @@ async function salvarPrompt() {
 }
 
 // ============ HORÁRIOS ============
+// Ao trocar de clínica: popula o seletor de profissional (se houver) e carrega.
+async function aoTrocarClinicaHorarios() {
+  const clinicaId = document.getElementById('hr-clinica').value;
+  const wrap = document.getElementById('hr-prof-wrap');
+  const selProf = document.getElementById('hr-profissional');
+  selProf.innerHTML = '<option value="">Padrão da clínica</option>';
+  if (!clinicaId) {
+    wrap.style.display = 'none';
+    document.getElementById('hr-editor').style.display = 'none';
+    return;
+  }
+  try {
+    const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/profissionais');
+    const profs = r.ok ? await r.json() : [];
+    const ativos = profs.filter(p => p.ativo);
+    if (ativos.length > 0) {
+      selProf.innerHTML = '<option value="">Padrão da clínica</option>' +
+        ativos.map(p => `<option value="${p.id}">${escapar(p.nome)}</option>`).join('');
+      wrap.style.display = 'block';
+    } else {
+      wrap.style.display = 'none';
+    }
+  } catch (e) {
+    wrap.style.display = 'none';
+  }
+  carregarHorarios();
+}
+
 async function carregarHorarios() {
   const clinicaId = document.getElementById('hr-clinica').value;
   const editor = document.getElementById('hr-editor');
@@ -2657,7 +2958,11 @@ async function carregarHorarios() {
     editor.style.display = 'none';
     return;
   }
-  const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/horarios');
+  const profSel = document.getElementById('hr-profissional');
+  const profId = profSel ? profSel.value : '';
+  const url = '/painel/admin/clinicas/' + clinicaId + '/horarios' +
+    (profId ? ('?profissional_id=' + encodeURIComponent(profId)) : '');
+  const r = await fetch(url);
   if (!r.ok) {
     mostrarMsg('Erro ao carregar horários.', 'erro');
     return;
@@ -2692,6 +2997,8 @@ async function salvarHorarios() {
     return;
   }
 
+  const profSel = document.getElementById('hr-profissional');
+  const profId = profSel ? profSel.value : '';
   const body = {
     dias_semana: dias.join(','),
     hora_inicio: document.getElementById('hr-inicio').value,
@@ -2701,6 +3008,7 @@ async function salvarHorarios() {
     duracao_minutos: parseInt(document.getElementById('hr-duracao').value, 10),
     antecedencia_minima_minutos: parseInt(document.getElementById('hr-antecedencia').value, 10),
   };
+  if (profId) body.profissional_id = parseInt(profId, 10);
 
   const r = await fetch('/painel/admin/clinicas/' + clinicaId + '/horarios', {
     method: 'PATCH',
@@ -2708,7 +3016,10 @@ async function salvarHorarios() {
     body: JSON.stringify(body)
   });
   if (r.ok) {
-    mostrarMsg('Horários atualizados. A Ana já passa a respeitar a nova configuração.', 'sucesso');
+    const alvo = profId
+      ? 'do profissional selecionado'
+      : 'padrão da clínica';
+    mostrarMsg('Horários ' + alvo + ' atualizados. A Ana já respeita a nova configuração.', 'sucesso');
   } else {
     const data = await r.json().catch(() => ({}));
     mostrarMsg('Erro: ' + (data.erro || 'falha desconhecida'), 'erro');
@@ -2995,11 +3306,14 @@ def registrar_rotas(app):
     @login_required
     @admin_required
     def admin_obter_horarios(clinica_id):
-        """Retorna a configuração de horários da clínica (cria padrão se não existir)."""
+        """Retorna a config de horários da clínica, ou de um profissional
+        (query ?profissional_id=X). Sem profissional = default da clínica."""
         clinica = obter_clinica(clinica_id)
         if not clinica:
             return jsonify({"erro": "clínica não encontrada"}), 404
-        cfg = obter_config_horarios(clinica_id)
+        prof_str = request.args.get("profissional_id")
+        prof_id = int(prof_str) if prof_str and prof_str.isdigit() else None
+        cfg = obter_config_horarios(clinica_id, prof_id)
         # Converte tipos pra JSON
         for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim"):
             if cfg.get(campo) is not None:
@@ -3012,11 +3326,14 @@ def registrar_rotas(app):
     @login_required
     @admin_required
     def admin_atualizar_horarios(clinica_id):
-        """Atualiza a configuração de horários de uma clínica."""
+        """Atualiza a config de horários da clínica, ou de um profissional
+        (body profissional_id=X cria/atualiza o override daquele profissional)."""
         body = request.get_json() or {}
         clinica = obter_clinica(clinica_id)
         if not clinica:
             return jsonify({"erro": "clínica não encontrada"}), 404
+        prof_id = body.get("profissional_id")
+        prof_id = int(prof_id) if prof_id else None
         try:
             atualizar_config_horarios(
                 clinica_id,
@@ -3027,9 +3344,59 @@ def registrar_rotas(app):
                 hora_fim=body.get("hora_fim"),
                 almoco_inicio=body.get("almoco_inicio"),
                 almoco_fim=body.get("almoco_fim"),
+                profissional_id=prof_id,
             )
             return jsonify({"ok": True})
         except Exception as e:
+            return jsonify({"erro": str(e)}), 400
+
+    # ---------- Admin: profissionais por clínica (multi-profissional) ----------
+    @app.route("/painel/admin/clinicas/<int:clinica_id>/profissionais", methods=["GET"])
+    @login_required
+    @admin_required
+    def admin_listar_profissionais(clinica_id):
+        """Lista profissionais de uma clínica (inclui inativos pro admin gerenciar)."""
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+        profs = listar_profissionais(clinica_id, incluir_inativos=True)
+        for p in profs:
+            if p.get("criado_em"):
+                p["criado_em"] = p["criado_em"].isoformat()
+        return jsonify(profs)
+
+    @app.route("/painel/admin/clinicas/<int:clinica_id>/profissionais", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_criar_profissional(clinica_id):
+        """Cadastra um profissional novo na clínica."""
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+        body = request.get_json() or {}
+        try:
+            pid = criar_profissional(clinica_id, body.get("nome"))
+            return jsonify({"id": pid})
+        except ValueError as e:
+            return jsonify({"erro": str(e)}), 400
+
+    @app.route("/painel/admin/profissionais/<int:profissional_id>", methods=["PATCH"])
+    @login_required
+    @admin_required
+    def admin_atualizar_profissional(profissional_id):
+        """Renomeia ou ativa/desativa um profissional."""
+        prof = obter_profissional(profissional_id)
+        if not prof:
+            return jsonify({"erro": "profissional não encontrado"}), 404
+        body = request.get_json() or {}
+        try:
+            atualizar_profissional(
+                profissional_id,
+                nome=body.get("nome"),
+                ativo=body.get("ativo"),
+            )
+            return jsonify({"ok": True})
+        except ValueError as e:
             return jsonify({"erro": str(e)}), 400
 
     # ============================================================
@@ -3097,10 +3464,18 @@ def registrar_rotas(app):
             if b.get("criado_em"):
                 b["criado_em"] = b["criado_em"].isoformat()
 
+        # Profissionais ativos da clínica (pro filtro/cor e seletor de criação).
+        # Lista vazia = clínica no modo agenda única (comportamento antigo).
+        profs = listar_profissionais(clinica_id)
+        for p in profs:
+            if p.get("criado_em"):
+                p["criado_em"] = p["criado_em"].isoformat()
+
         return jsonify({
             "config": cfg,
             "agendamentos": ags,
             "bloqueios": blqs,
+            "profissionais": profs,
         })
 
     @app.route("/painel/api/agendamentos/<int:agendamento_id>/cancelar",
@@ -3171,6 +3546,30 @@ def registrar_rotas(app):
         except ValueError:
             return None
 
+    def _resolver_prof_body(clinica_id, body, obrigatorio):
+        """
+        Valida o profissional_id vindo do body pra escritas na agenda.
+        Retorna (profissional_id, erro_response):
+          - clínica sem profissionais: (None, None) — modo agenda única.
+          - obrigatorio e ausente/inválido: (None, resposta 400).
+          - opcional e ausente: (None, None) — vale pra clínica toda (bloqueio).
+        """
+        profs = listar_profissionais(clinica_id)
+        if not profs:
+            return None, None
+        ids = {p["id"] for p in profs}
+        raw = body.get("profissional_id")
+        pid = int(raw) if raw not in (None, "") and str(raw).isdigit() else None
+        if pid is None:
+            if obrigatorio:
+                return None, (jsonify({
+                    "erro": "esta clínica tem profissionais; selecione o profissional"
+                }), 400)
+            return None, None
+        if pid not in ids:
+            return None, (jsonify({"erro": "profissional inválido"}), 400)
+        return pid, None
+
     @app.route("/painel/api/agendamentos", methods=["POST"])
     @login_required
     def api_criar_agendamento():
@@ -3188,6 +3587,10 @@ def registrar_rotas(app):
         if not dt:
             return jsonify({"erro": "data/hora inválida"}), 400
 
+        prof_id, erro_prof = _resolver_prof_body(clinica_id, body, obrigatorio=True)
+        if erro_prof:
+            return erro_prof
+
         telefone = (body.get("telefone") or "").strip()
         observacao = (body.get("observacao") or "").strip() or None
         try:
@@ -3198,6 +3601,7 @@ def registrar_rotas(app):
                 nome_lead=nome,
                 origem="manual",
                 observacao=observacao,
+                profissional_id=prof_id,
             )
             return jsonify({"id": ag_id})
         except ValueError as e:
@@ -3254,6 +3658,10 @@ def registrar_rotas(app):
         if fim <= inicio:
             return jsonify({"erro": "o fim precisa ser depois do início"}), 400
 
+        prof_id, erro_prof = _resolver_prof_body(clinica_id, body, obrigatorio=False)
+        if erro_prof:
+            return erro_prof
+
         motivo = (body.get("motivo") or "").strip() or "Bloqueio manual"
-        bid = criar_bloqueio(clinica_id, inicio, fim, motivo)
+        bid = criar_bloqueio(clinica_id, inicio, fim, motivo, profissional_id=prof_id)
         return jsonify({"id": bid})

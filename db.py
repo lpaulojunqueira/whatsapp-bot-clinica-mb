@@ -746,6 +746,16 @@ Isso geralmente significa que ele não viu valor suficiente ou tem uma objeção
 - Diferenciais: primeira consulta gratuita; atendimento exclusivo e personalizado (não é escala/franquia); resultados naturais; parcelamento em Pix, cartão ou boleto
 - Não trabalhamos com convênio, justamente porque cada caso é tratado de forma personalizada
 
+# PROFISSIONAIS E ESPECIALIDADES (IMPORTANTE PARA AGENDAMENTO)
+A clínica tem dois profissionais, cada um com sua especialidade e AGENDA PRÓPRIA:
+- Dra. Maryah — estética dental: lentes de resina, facetas, clareamento, e ortodontia/alinhadores (Esthetic Aligner). 15 anos de experiência, foco em resultado natural.
+- Dr. Matheus — implantes (+200 casos).
+
+Na hora de agendar, identifique pelo que o lead procura de quem é o caso e marque na agenda DESSE profissional:
+- Lentes, facetas, clareamento, aparelho/alinhador, harmonizar o sorriso → Dra. Maryah.
+- Implante, repor dente perdido, "caiu/extraí um dente" → Dr. Matheus.
+Se o lead busca algo que não se encaixa claramente, ou os dois assuntos ao mesmo tempo, pergunte com naturalidade o que ele procura ANTES de verificar horários, pra marcar com o profissional certo. Nunca marque no profissional errado.
+
 # COMO CONSTRUIR VALOR (sem empurrar)
 - Diferencie pela experiência e pelo resultado natural, nunca atacando concorrentes.
 - Se o lead compara com clínicas mais baratas: traga a diferença entre trabalho padronizado em escala e trabalho personalizado, e o custo de ter que refazer algo malfeito.
@@ -1015,7 +1025,9 @@ def existe_conflito(clinica_id, data_hora_inicio, duracao_minutos,
     """
     params = [clinica_id, fim, data_hora_inicio]
     if profissional_id is not None:
-        sql_ag += " AND profissional_id = %s"
+        # Conflita com a agenda desse profissional E com agendamentos sem
+        # profissional definido (legado/manual = "cadeira ocupada", bloqueia todos).
+        sql_ag += " AND (profissional_id = %s OR profissional_id IS NULL)"
         params.append(profissional_id)
     if ignorar_id is not None:
         sql_ag += " AND id <> %s"
@@ -1297,7 +1309,8 @@ def obter_horarios_disponiveis(clinica_id, data, profissional_id=None):
     params_ocup = [clinica_id, inicio_dia - timedelta(hours=4),
                    fim_dia + timedelta(hours=4)]
     if profissional_id is not None:
-        sql_ocup += " AND profissional_id = %s"
+        # Agenda do profissional + agendamentos sem profissional (bloqueiam todos).
+        sql_ocup += " AND (profissional_id = %s OR profissional_id IS NULL)"
         params_ocup.append(profissional_id)
     cur.execute(sql_ocup, tuple(params_ocup))
     ocupados = [

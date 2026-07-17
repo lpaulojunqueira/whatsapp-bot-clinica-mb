@@ -13,6 +13,7 @@ import threading
 import time
 import random
 import re
+import copy
 from datetime import datetime, timedelta, timezone
 
 from db import (
@@ -36,6 +37,7 @@ from db import (
     criar_bloqueio,
     remover_bloqueio,
     listar_bloqueios,
+    listar_profissionais,
 )
 from painel import registrar_rotas as registrar_rotas_painel
 
@@ -504,6 +506,90 @@ FERRAMENTAS = [
 
 
 # ============================================================
+# MULTI-PROFISSIONAL (usado só quando a clínica tem profissionais)
+# ============================================================
+def _formatar_profissionais_pro_prompt(profissionais):
+    """
+    Bloco injetado no prompt da Ana listando os profissionais (id + nome).
+    A Ana usa o ID pra chamar verificar_disponibilidade e criar_agendamento.
+    O roteamento por especialidade vive no prompt de cada clínica (aqui só o mapa id→nome).
+    """
+    if not profissionais:
+        return ""
+    linhas = "\n".join(f"- ID {p['id']}: {p['nome']}" for p in profissionais)
+    return (
+        "\n\n===== PROFISSIONAIS DESTA CLÍNICA (AGENDA SEPARADA POR PROFISSIONAL) =====\n"
+        "Esta clínica tem mais de um profissional, cada um com AGENDA e horários próprios.\n"
+        "Profissionais cadastrados (use o ID EXATO ao agendar):\n"
+        f"{linhas}\n"
+        "\n"
+        "REGRAS DE PROFISSIONAL (siga sempre):\n"
+        "- Descubra pelo que o lead procura QUAL profissional cuida do caso. As "
+        "especialidades de cada um estão descritas mais acima no seu prompt.\n"
+        "- SEMPRE informe o profissional_id correto em verificar_disponibilidade e "
+        "criar_agendamento. Disponibilidade e marcação são na agenda DAQUELE profissional.\n"
+        "- NUNCA marque no profissional errado. Se não estiver claro qual profissional "
+        "atende o que o lead quer, pergunte de forma natural o que ele procura ANTES de "
+        "verificar horários.\n"
+        "- Pra remarcar ou cancelar você NÃO precisa do profissional_id: o sistema já "
+        "sabe de qual profissional é aquele agendamento.\n"
+        "=================================================================="
+    )
+
+
+def _ferramentas_lead(tem_profissionais):
+    """
+    Retorna a lista de ferramentas do modo lead. Em clínica multi-profissional,
+    injeta o parâmetro profissional_id (obrigatório) em verificar_disponibilidade
+    e criar_agendamento. Em clínica single, retorna as ferramentas originais.
+    """
+    if not tem_profissionais:
+        return FERRAMENTAS
+    tools = copy.deepcopy(FERRAMENTAS)
+    for t in tools:
+        if t["name"] in ("verificar_disponibilidade", "criar_agendamento"):
+            t["input_schema"]["properties"]["profissional_id"] = {
+                "type": "integer",
+                "description": (
+                    "ID do profissional cuja agenda usar. Precisa ser um dos IDs "
+                    "listados na seção PROFISSIONAIS DESTA CLÍNICA, escolhido pela "
+                    "especialidade que o lead procura."
+                )
+            }
+            if "profissional_id" not in t["input_schema"]["required"]:
+                t["input_schema"]["required"].append("profissional_id")
+    return tools
+
+
+def _resolver_profissional_lead(args, clinica):
+    """
+    Em clínica multi-profissional: valida o profissional_id que a Ana passou.
+    Retorna (profissional_id, erro_str):
+      - clínica single (sem profissionais): (None, None) — segue o fluxo antigo.
+      - multi com id válido: (id, None).
+      - multi com id ausente/inválido: (None, mensagem de erro pra Ana corrigir).
+    """
+    profs = listar_profissionais(clinica["id"])
+    if not profs:
+        return None, None
+    ids = {p["id"] for p in profs}
+    pid = args.get("profissional_id")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        pid = None
+    if pid not in ids:
+        nomes = ", ".join(f"{p['nome']} = ID {p['id']}" for p in profs)
+        return None, (
+            "Erro: esta clínica tem mais de um profissional, cada um com agenda "
+            f"própria ({nomes}). Você precisa informar o profissional_id correto. "
+            "Escolha pela especialidade que o lead procura e chame a ferramenta de "
+            "novo com o profissional_id certo."
+        )
+    return pid, None
+
+
+# ============================================================
 # MODO DONO — o responsável da clínica falando com a Ana
 # ============================================================
 PROMPT_MODO_DONO = """Você é Ana, mas agora está conversando com o RESPONSÁVEL da clínica (o dono, o profissional, ou alguém da equipe administrativa) — NÃO com um paciente.
@@ -686,8 +772,17 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
         if (data_fim - data_ini).days > 14:
             return "Erro: intervalo muito longo. Consulte no máximo 14 dias por vez.", extra
 
+        # Modo multi-profissional: só no contexto de lead (numero_lead preenchido).
+        # No modo dono a verificação é da clínica toda (profissional_id=None).
+        prof_id = None
+        if numero_lead is not None:
+            prof_id, erro = _resolver_profissional_lead(args, clinica)
+            if erro:
+                return erro, extra
+
         slots = obter_horarios_disponiveis_intervalo(
-            clinica["id"], data_ini, data_fim, max_por_dia=4
+            clinica["id"], data_ini, data_fim, max_por_dia=4,
+            profissional_id=prof_id
         )
 
         if not slots:
@@ -724,6 +819,11 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
 
         observacao = (args.get("observacao") or "").strip() or None
 
+        # Modo multi-profissional: exige profissional_id válido antes de marcar.
+        prof_id, erro = _resolver_profissional_lead(args, clinica)
+        if erro:
+            return erro, extra
+
         try:
             ag_id = criar_agendamento(
                 clinica_id=clinica["id"],
@@ -732,12 +832,14 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
                 nome_lead=nome_paciente,
                 conversa_id=conversa_id,
                 origem="ana",
-                observacao=observacao
+                observacao=observacao,
+                profissional_id=prof_id
             )
             extra["agendamento_criado_id"] = ag_id
             extra["agendamento_data_hora"] = dt
             extra["agendamento_nome"] = nome_paciente
             extra["agendamento_observacao"] = observacao
+            extra["agendamento_profissional_id"] = prof_id
 
             data_fmt = _formatar_data_extensa(dt)
             hora_fmt = dt.strftime("%H:%M")
@@ -1022,10 +1124,16 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
     else:
         # Modo lead: prompt personalizado da clínica + ferramentas de agendamento
         system_completo = system_prompt + construir_contexto_temporal()
+        ferramentas_disponiveis = FERRAMENTAS
         if clinica:
             system_completo += _formatar_config_horarios_pro_prompt(clinica["id"])
+            # Multi-profissional: injeta a lista de profissionais e ativa o
+            # profissional_id nas ferramentas. Clínica sem profissionais = fluxo antigo.
+            profissionais = listar_profissionais(clinica["id"])
+            if profissionais:
+                system_completo += _formatar_profissionais_pro_prompt(profissionais)
             system_completo += INSTRUCOES_AGENDAMENTO
-        ferramentas_disponiveis = FERRAMENTAS
+            ferramentas_disponiveis = _ferramentas_lead(bool(profissionais))
         executar_func = lambda nome, args: _executar_ferramenta(
             nome, args, clinica, conversa_id, numero_lead
         )
