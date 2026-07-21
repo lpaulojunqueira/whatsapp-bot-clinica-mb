@@ -397,7 +397,23 @@ REGRAS RÍGIDAS:
 - Se o lead pedir um horário específico, verifique e responda baseado no resultado real.
 - Se o horário pedido pelo lead NÃO estiver na lista de disponíveis, diga que aquele
   horário específico não está livre e proponha os mais próximos.
+- Só é possível marcar EXATAMENTE nos horários que a ferramenta retornou (ex: 14:00,
+  15:00). Se o lead pedir um horário quebrado ou fora da lista (ex: 16:30 quando a lista
+  tem só horas cheias), NÃO aceite nem confirme esse horário — explique que trabalha com
+  aqueles horários e ofereça o mais próximo da lista.
 - Se a ferramenta retornar erro de conflito, peça desculpa e proponha outro horário.
+
+REGRA ABSOLUTA DE CONFIRMAÇÃO (a mais importante):
+- Você SÓ pode dizer que o agendamento está marcado/confirmado DEPOIS de chamar
+  criar_agendamento E receber de volta a confirmação com o ID. Enquanto você não
+  chamar a ferramenta e ela não confirmar, o agendamento NÃO EXISTE.
+- É TERMINANTEMENTE PROIBIDO dizer "agendado", "marcado", "confirmado", "está reservado"
+  ou qualquer coisa parecida sem ter chamado criar_agendamento e recebido o sucesso.
+  Dizer que marcou sem ter marcado faz o paciente aparecer e não ter horário — é o pior
+  erro possível.
+- Fluxo obrigatório sempre: (1) lead confirma um horário da lista → (2) você chama
+  criar_agendamento → (3) a ferramenta retorna sucesso com ID → (4) SÓ ENTÃO você
+  confirma pro lead com data por extenso, hora e nome.
 - Sempre confirme o agendamento pro lead com TODOS os detalhes (data por extenso, hora, nome).
 ========================
 """
@@ -1534,21 +1550,18 @@ def processar_mensagem_em_background(
         # 8) Rastreamento de conversões (CAPI). Só toca no banco/rede se o tenant
         # tem CAPI ativo e é conversa de lead. enviar_evento é no-op sem ctwa_clid
         # e faz dedup — pode ser chamado à vontade, nunca quebra o atendimento.
+        #
+        # A Conversions API de MENSAGENS (WhatsApp) só aceita dois nomes de evento:
+        # "LeadSubmitted" e "Purchase". "Contact"/"Lead"/"Schedule" são recusados (400).
+        # Por isso: agendamento marcado = LeadSubmitted (lead qualificado de verdade);
+        # a venda vira Purchase (disparado no painel / modo dono).
         if not modo_dono and clinica.get("capi_ativo"):
             conversa = obter_conversa(conversa_id)
-            # Lead veio de anúncio → conversa iniciada (evento padrão Contact).
-            capi.enviar_evento(clinica, conversa, "Contact",
-                               f"contact:{conversa_id}")
-            # Lead qualificado → pediu pra ver horários nesta conversa.
-            if meta_ia.get("consultou_disponibilidade"):
-                capi.enviar_evento(clinica, conversa, "Lead",
-                                   f"lead:{conversa_id}")
-            # Agendamento(s) gravado(s) nesta rodada.
             for ag in agendamentos:
                 ag_id = ag.get("agendamento_criado_id")
                 if ag_id:
-                    capi.enviar_evento(clinica, conversa, "Schedule",
-                                       f"schedule:{ag_id}")
+                    capi.enviar_evento(clinica, conversa, "LeadSubmitted",
+                                       f"leadsubmitted:{ag_id}")
 
     except Exception as e:
         import traceback
