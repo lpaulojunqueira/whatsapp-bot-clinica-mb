@@ -54,6 +54,7 @@ from db import (
     buscar_conversa_por_numero,
     listar_agendamentos_para_reenvio_capi,
     capi_evento_ja_enviado,
+    diagnostico_capi,
 )
 import capi
 
@@ -2465,7 +2466,11 @@ ADMIN_HTML = """
       <button class="btn btn-primario" type="button" onclick="reenviarEventosCapi()">
         Reenviar eventos dos últimos 7 dias
       </button>
+      <button class="btn btn-pequeno" type="button" onclick="diagnosticoCapi()" style="margin-left:8px;">
+        Diagnóstico
+      </button>
       <div id="capi-resultado" style="margin-top:14px;"></div>
+      <div id="capi-diag" style="margin-top:14px;"></div>
     </div>
 
     <div class="card">
@@ -2918,6 +2923,54 @@ async function reenviarEventosCapi() {
       </div>
     </div>
     ${linhas ? '<ul style="font-size:12px; color:#6B7280; margin:8px 0 0 18px;">' + linhas + '</ul>' : ''}
+  `;
+}
+
+async function diagnosticoCapi() {
+  const alvo = document.getElementById('capi-diag');
+  alvo.innerHTML = '<p style="color:#6B7280; font-size:13px;">Carregando diagnóstico...</p>';
+  const r = await fetch('/painel/admin/capi/diagnostico');
+  if (!r.ok) { alvo.innerHTML = '<div class="alerta alerta-erro">Erro.</div>'; return; }
+  const d = await r.json();
+
+  const sim = v => v ? '✅' : '—';
+  const cfg = (d.clinicas || []).map(c => `
+    <tr>
+      <td><strong>${escapar(c.nome)}</strong></td>
+      <td>${sim(c.capi_ativo)}</td>
+      <td><code style="font-size:11px">${escapar(c.meta_dataset_id || '—')}</code></td>
+      <td><code style="font-size:11px">${escapar(c.meta_page_id || '—')}</code></td>
+      <td>${sim(c.tem_token)}</td>
+      <td>${c.tem_test_code ? '⚠️ SIM' : '—'}</td>
+    </tr>`).join('');
+
+  const ev = (d.eventos || []).map(e => `
+    <tr>
+      <td style="white-space:nowrap">${escapar((e.criado_em || '').replace('T',' ').slice(0,16))}</td>
+      <td>${escapar(e.clinica_nome || '')}</td>
+      <td>${escapar(e.event_name || '')}</td>
+      <td>${e.status === 'enviado' ? '✅ enviado' : '❌ ' + escapar(e.status || '')}</td>
+      <td style="font-size:11px; color:#6B7280">${escapar(e.resposta || '')}</td>
+    </tr>`).join('');
+
+  const rf = (d.referrals || []).map(x => `
+    <tr>
+      <td style="white-space:nowrap">${escapar((x.referral_captado_em || '').replace('T',' ').slice(0,16))}</td>
+      <td>${escapar(x.clinica_nome || '')}</td>
+      <td>${escapar(x.numero_lead || '')}</td>
+      <td>${x.ctwa_clid ? '✅ tem' : '❌ VAZIO'}</td>
+      <td style="font-size:10px; color:#6B7280; max-width:420px; overflow:auto;">
+        <code>${escapar(JSON.stringify(x.referral_json || {}))}</code>
+      </td>
+    </tr>`).join('');
+
+  alvo.innerHTML = `
+    <div style="font-weight:600; margin:14px 0 6px;">Configuração por cliente</div>
+    <table><thead><tr><th>Cliente</th><th>Ativo</th><th>Dataset ID</th><th>Page ID</th><th>Token</th><th>Test code</th></tr></thead><tbody>${cfg}</tbody></table>
+    <div style="font-weight:600; margin:18px 0 6px;">Últimos eventos enviados (resposta da Meta)</div>
+    <table><thead><tr><th>Quando</th><th>Cliente</th><th>Evento</th><th>Status</th><th>Resposta</th></tr></thead><tbody>${ev || '<tr><td colspan=5>nenhum</td></tr>'}</tbody></table>
+    <div style="font-weight:600; margin:18px 0 6px;">Últimos referrals capturados (JSON cru)</div>
+    <table><thead><tr><th>Quando</th><th>Cliente</th><th>Número</th><th>ctwa_clid</th><th>referral_json</th></tr></thead><tbody>${rf || '<tr><td colspan=5>nenhum</td></tr>'}</tbody></table>
   `;
 }
 
@@ -3565,6 +3618,20 @@ def registrar_rotas(app):
         except Exception as e:
             return jsonify({"erro": str(e)}), 400
 
+    # ---------- Admin: diagnóstico do rastreamento ----------
+    @app.route("/painel/admin/capi/diagnostico", methods=["GET"])
+    @login_required
+    @admin_required
+    def admin_capi_diagnostico():
+        d = diagnostico_capi()
+        for e in d["eventos"]:
+            if e.get("criado_em"):
+                e["criado_em"] = e["criado_em"].isoformat()
+        for r in d["referrals"]:
+            if r.get("referral_captado_em"):
+                r["referral_captado_em"] = r["referral_captado_em"].isoformat()
+        return jsonify(d)
+
     # ---------- Admin: reenviar eventos CAPI que falharam ----------
     @app.route("/painel/admin/capi/reenviar", methods=["POST"])
     @login_required
@@ -3609,7 +3676,8 @@ def registrar_rotas(app):
                 res["sem_atribuicao"] += 1
                 res["detalhes"].append(
                     f"#{ag['id']} {ag.get('nome_lead') or ''} ({ag['clinica_nome']}): "
-                    f"lead sem ctwa_clid — não veio de anúncio"
+                    f"sem ctwa_clid na conversa (anterior ao rastreamento, ou referral "
+                    f"sem click id) — não dá pra atribuir"
                 )
                 continue
 

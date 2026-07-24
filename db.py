@@ -548,6 +548,47 @@ def listar_agendamentos_para_reenvio_capi(dias=7):
     return rows
 
 
+def diagnostico_capi():
+    """
+    Fotografia do estado do rastreamento pra depuração (admin): config CAPI de
+    cada clínica, últimos eventos enviados (com a resposta da Meta) e os últimos
+    referrals capturados (com o JSON cru) — inclusive os sem ctwa_clid.
+    O token NUNCA é retornado, só se existe ou não.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+
+    cur.execute("""
+        SELECT id, nome, capi_ativo, meta_dataset_id, meta_page_id,
+               (meta_capi_token IS NOT NULL AND meta_capi_token <> '') AS tem_token,
+               (meta_test_event_code IS NOT NULL AND meta_test_event_code <> '') AS tem_test_code
+        FROM clinicas ORDER BY nome
+    """)
+    clinicas = cur.fetchall()
+
+    cur.execute("""
+        SELECT e.criado_em, e.event_name, e.event_id, e.status,
+               LEFT(COALESCE(e.resposta, ''), 400) AS resposta,
+               cl.nome AS clinica_nome
+        FROM capi_eventos e JOIN clinicas cl ON cl.id = e.clinica_id
+        ORDER BY e.criado_em DESC LIMIT 25
+    """)
+    eventos = cur.fetchall()
+
+    cur.execute("""
+        SELECT c.referral_captado_em, c.numero_lead, c.ctwa_clid,
+               c.referral_source_type, c.referral_json, cl.nome AS clinica_nome
+        FROM conversas c JOIN clinicas cl ON cl.id = c.clinica_id
+        WHERE c.referral_captado_em IS NOT NULL
+        ORDER BY c.referral_captado_em DESC LIMIT 25
+    """)
+    referrals = cur.fetchall()
+
+    cur.close()
+    conn.close()
+    return {"clinicas": clinicas, "eventos": eventos, "referrals": referrals}
+
+
 def registrar_venda(clinica_id, conversa_id, valor=None, moeda="BRL", descricao=None):
     """Registra uma venda (fecho) numa conversa. Retorna o id da venda."""
     conn = _conectar()
