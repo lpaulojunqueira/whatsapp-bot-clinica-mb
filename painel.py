@@ -2469,6 +2469,9 @@ ADMIN_HTML = """
       <button class="btn btn-pequeno" type="button" onclick="diagnosticoCapi()" style="margin-left:8px;">
         Diagnóstico
       </button>
+      <button class="btn btn-pequeno" type="button" onclick="reenviarEventosCapi(true)" style="margin-left:8px;">
+        Forçar reenvio (teste)
+      </button>
       <div id="capi-resultado" style="margin-top:14px;"></div>
       <div id="capi-diag" style="margin-top:14px;"></div>
     </div>
@@ -2898,13 +2901,13 @@ async function carregarClinicas() {
 }
 
 // ============ CAPI — REENVIO DE EVENTOS ============
-async function reenviarEventosCapi() {
+async function reenviarEventosCapi(forcar) {
   const alvo = document.getElementById('capi-resultado');
   alvo.innerHTML = '<p style="color:#6B7280; font-size:13px;">Reenviando...</p>';
   const r = await fetch('/painel/admin/capi/reenviar', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ dias: 7 })
+    body: JSON.stringify({ dias: 7, forcar: !!forcar })
   });
   if (!r.ok) {
     alvo.innerHTML = '<div class="alerta alerta-erro">Erro ao reenviar.</div>';
@@ -3648,6 +3651,8 @@ def registrar_rotas(app):
             dias = min(max(int(body.get("dias") or 7), 1), 7)
         except (TypeError, ValueError):
             dias = 7
+        # forcar=True reenvia mesmo os já enviados (pra testar page_id no Test Events).
+        forcar = bool(body.get("forcar"))
 
         ags = listar_agendamentos_para_reenvio_capi(dias)
         res = {
@@ -3682,7 +3687,7 @@ def registrar_rotas(app):
                 continue
 
             event_id = f"leadsubmitted:{ag['id']}"
-            if capi_evento_ja_enviado(event_id):
+            if not forcar and capi_evento_ja_enviado(event_id):
                 res["ja_enviados"] += 1
                 continue
 
