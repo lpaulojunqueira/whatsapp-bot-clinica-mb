@@ -51,6 +51,9 @@ from db import (
     atualizar_profissional,
     obter_conversa,
     registrar_venda,
+    buscar_conversa_por_numero,
+    listar_agendamentos_para_reenvio_capi,
+    capi_evento_ja_enviado,
 )
 import capi
 
@@ -2452,6 +2455,20 @@ ADMIN_HTML = """
     </div>
 
     <div class="card">
+      <div class="card-titulo">Rastreamento Meta — reenviar eventos</div>
+      <div class="card-sub">
+        Reenvia o evento de conversão (LeadSubmitted) dos agendamentos dos últimos
+        7 dias que ainda não foram contabilizados na Meta. Usa a data real do
+        agendamento, e pula os que já foram enviados com sucesso — pode clicar sem medo
+        de duplicar. Só funciona pra leads que vieram de anúncio (com atribuição).
+      </div>
+      <button class="btn btn-primario" type="button" onclick="reenviarEventosCapi()">
+        Reenviar eventos dos últimos 7 dias
+      </button>
+      <div id="capi-resultado" style="margin-top:14px;"></div>
+    </div>
+
+    <div class="card">
       <div class="card-titulo">Novo cliente</div>
       <div class="card-sub">
         Antes de cadastrar, certifique-se que o número do cliente já está ativo no
@@ -2872,6 +2889,35 @@ async function carregarClinicas() {
         `).join('')}
       </tbody>
     </table>
+  `;
+}
+
+// ============ CAPI — REENVIO DE EVENTOS ============
+async function reenviarEventosCapi() {
+  const alvo = document.getElementById('capi-resultado');
+  alvo.innerHTML = '<p style="color:#6B7280; font-size:13px;">Reenviando...</p>';
+  const r = await fetch('/painel/admin/capi/reenviar', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ dias: 7 })
+  });
+  if (!r.ok) {
+    alvo.innerHTML = '<div class="alerta alerta-erro">Erro ao reenviar.</div>';
+    return;
+  }
+  const d = await r.json();
+  const linhas = (d.detalhes || []).map(x => '<li>' + escapar(x) + '</li>').join('');
+  alvo.innerHTML = `
+    <div class="alerta ${d.enviados > 0 ? 'alerta-sucesso' : 'alerta-info'}">
+      <strong>${d.enviados}</strong> evento(s) enviado(s) agora ·
+      ${d.ja_enviados} já contabilizado(s) antes ·
+      ${d.sem_atribuicao} sem atribuição de anúncio ·
+      ${d.falhas} falha(s)
+      <div style="font-size:12px; margin-top:6px;">
+        ${d.total_agendamentos} agendamento(s) analisado(s) nos últimos ${d.dias} dias.
+      </div>
+    </div>
+    ${linhas ? '<ul style="font-size:12px; color:#6B7280; margin:8px 0 0 18px;">' + linhas + '</ul>' : ''}
   `;
 }
 
@@ -3518,6 +3564,77 @@ def registrar_rotas(app):
             return jsonify({"ok": True})
         except Exception as e:
             return jsonify({"erro": str(e)}), 400
+
+    # ---------- Admin: reenviar eventos CAPI que falharam ----------
+    @app.route("/painel/admin/capi/reenviar", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_reenviar_capi():
+        """
+        Reenvia o evento LeadSubmitted dos agendamentos recentes que ainda não
+        foram contabilizados na Meta (ex: falharam por falta de page_id).
+        Usa a data REAL do agendamento como event_time. Deduplicado: agendamento
+        já enviado com sucesso é pulado.
+        """
+        body = request.get_json() or {}
+        try:
+            dias = min(max(int(body.get("dias") or 7), 1), 7)
+        except (TypeError, ValueError):
+            dias = 7
+
+        ags = listar_agendamentos_para_reenvio_capi(dias)
+        res = {
+            "dias": dias, "total_agendamentos": len(ags), "enviados": 0,
+            "ja_enviados": 0, "sem_atribuicao": 0, "tenant_sem_capi": 0,
+            "falhas": 0, "detalhes": [],
+        }
+        cache = {}
+
+        for ag in ags:
+            cid = ag["clinica_id"]
+            if cid not in cache:
+                cache[cid] = obter_clinica(cid)
+            clinica = cache[cid]
+
+            if not clinica or not clinica.get("capi_ativo"):
+                res["tenant_sem_capi"] += 1
+                continue
+
+            # Acha a conversa: pelo vínculo, ou pelo número (agendamento manual
+            # feito no painel não tem conversa_id).
+            conversa = obter_conversa(ag["conversa_id"]) if ag["conversa_id"] else None
+            if not conversa or not conversa.get("ctwa_clid"):
+                conversa = buscar_conversa_por_numero(cid, ag["numero_lead"]) or conversa
+            if not conversa or not conversa.get("ctwa_clid"):
+                res["sem_atribuicao"] += 1
+                res["detalhes"].append(
+                    f"#{ag['id']} {ag.get('nome_lead') or ''} ({ag['clinica_nome']}): "
+                    f"lead sem ctwa_clid — não veio de anúncio"
+                )
+                continue
+
+            event_id = f"leadsubmitted:{ag['id']}"
+            if capi_evento_ja_enviado(event_id):
+                res["ja_enviados"] += 1
+                continue
+
+            ok = capi.enviar_evento(
+                clinica, conversa, "LeadSubmitted", event_id,
+                event_time=int(ag["criado_em"].timestamp())
+            )
+            if ok:
+                res["enviados"] += 1
+                res["detalhes"].append(
+                    f"#{ag['id']} {ag.get('nome_lead') or ''} ({ag['clinica_nome']}): enviado ✅"
+                )
+            else:
+                res["falhas"] += 1
+                res["detalhes"].append(
+                    f"#{ag['id']} {ag.get('nome_lead') or ''} ({ag['clinica_nome']}): "
+                    f"falhou — ver log do servidor"
+                )
+
+        return jsonify(res)
 
     # ---------- Admin: profissionais por clínica (multi-profissional) ----------
     @app.route("/painel/admin/clinicas/<int:clinica_id>/profissionais", methods=["GET"])

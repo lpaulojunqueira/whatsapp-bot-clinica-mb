@@ -522,6 +522,32 @@ def registrar_evento_capi(clinica_id, conversa_id, event_name, event_id,
     conn.close()
 
 
+def listar_agendamentos_para_reenvio_capi(dias=7):
+    """
+    Agendamentos confirmados criados nos últimos N dias — candidatos a reenvio
+    de evento CAPI (a janela de atribuição da Meta é de 7 dias).
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT a.id, a.clinica_id, a.conversa_id, a.numero_lead,
+               a.nome_lead, a.criado_em, a.data_hora,
+               cl.nome AS clinica_nome
+        FROM agendamentos a
+        JOIN clinicas cl ON cl.id = a.clinica_id
+        WHERE a.status = 'confirmado'
+          AND a.criado_em >= NOW() - (%s || ' days')::interval
+        ORDER BY a.criado_em ASC
+        """,
+        (str(int(dias)),)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
 def registrar_venda(clinica_id, conversa_id, valor=None, moeda="BRL", descricao=None):
     """Registra uma venda (fecho) numa conversa. Retorna o id da venda."""
     conn = _conectar()

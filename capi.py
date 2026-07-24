@@ -30,7 +30,7 @@ def _capi_configurado(clinica):
 
 
 def enviar_evento(clinica, conversa, event_name, event_id,
-                  extra_user_data=None, custom_data=None):
+                  extra_user_data=None, custom_data=None, event_time=None):
     """
     Envia um evento pra Conversions API do tenant. Retorna True se enviou,
     False se pulou ou falhou (sem levantar exceção).
@@ -41,6 +41,9 @@ def enviar_evento(clinica, conversa, event_name, event_id,
     - event_name: "Contact", "Lead", "Schedule", "Purchase", etc.
     - event_id: id determinístico pra deduplicação (ex: "schedule:123").
     - custom_data: dict opcional (ex: {"value": 3000.0, "currency": "BRL"} no Purchase).
+    - event_time: timestamp unix do momento REAL do evento. Use no reenvio de
+      eventos antigos (a Meta atribui pela data do evento, não pela do envio).
+      Se omitido, usa agora.
     """
     try:
         # 1) Rastreamento desligado pra esse tenant — sai quieto, sem warning.
@@ -70,7 +73,7 @@ def enviar_evento(clinica, conversa, event_name, event_id,
 
         evento = {
             "event_name": event_name,
-            "event_time": int(time.time()),
+            "event_time": int(event_time) if event_time else int(time.time()),
             "action_source": "business_messaging",
             "messaging_channel": "whatsapp",
             "event_id": event_id,
