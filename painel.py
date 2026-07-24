@@ -2694,6 +2694,9 @@ ADMIN_HTML = """
         <label>Dataset ID <span class="label-dica">— do Gerenciador de Eventos da conta que roda os anúncios</span></label>
         <input type="text" id="ed-meta-dataset" placeholder="Ex: 1234567890123456" autocomplete="off">
 
+        <label>Page ID <span class="label-dica">— ID da Página do Facebook que veicula os anúncios (obrigatório: a Meta recusa o evento sem ele)</span></label>
+        <input type="text" id="ed-meta-pageid" placeholder="Ex: 284718968060124" autocomplete="off">
+
         <label>Token da Conversions API <span class="label-dica">— token de acesso do dataset (secreto)</span></label>
         <input type="password" id="ed-meta-token" placeholder="Deixe em branco pra manter o atual" autocomplete="off">
 
@@ -2888,6 +2891,7 @@ async function abrirEdicaoCliente(clinicaId) {
   document.getElementById('ed-prompt').value = c.system_prompt || '';
   // Rastreamento Meta. O token NÃO é pré-preenchido (fica em branco = mantém o atual).
   document.getElementById('ed-meta-dataset').value = c.meta_dataset_id || '';
+  document.getElementById('ed-meta-pageid').value = c.meta_page_id || '';
   document.getElementById('ed-meta-token').value = '';
   document.getElementById('ed-meta-testcode').value = c.meta_test_event_code || '';
   document.getElementById('ed-capi-ativo').checked = !!c.capi_ativo;
@@ -2908,6 +2912,7 @@ async function salvarEdicaoCliente(e) {
     telefone_humano: document.getElementById('ed-fone-humano').value.trim(),
     system_prompt: document.getElementById('ed-prompt').value.trim(),
     meta_dataset_id: document.getElementById('ed-meta-dataset').value.trim(),
+    meta_page_id: document.getElementById('ed-meta-pageid').value.trim(),
     meta_test_event_code: document.getElementById('ed-meta-testcode').value.trim(),
     capi_ativo: document.getElementById('ed-capi-ativo').checked,
   };
@@ -3454,6 +3459,7 @@ def registrar_rotas(app):
                 meta_capi_token=body.get("meta_capi_token"),
                 capi_ativo=body.get("capi_ativo"),
                 meta_test_event_code=body.get("meta_test_event_code"),
+                meta_page_id=body.get("meta_page_id"),
             )
             return jsonify({"ok": True})
         except Exception as e:

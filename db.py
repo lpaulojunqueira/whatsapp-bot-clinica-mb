@@ -68,6 +68,12 @@ def inicializar_banco():
         ALTER TABLE clinicas
         ADD COLUMN IF NOT EXISTS meta_test_event_code TEXT;
     """)
+    # ID da Página do Facebook associada ao dataset/anúncios do tenant.
+    # A Meta EXIGE esse campo nos eventos de mensagem (erro 2804116 sem ele).
+    cur.execute("""
+        ALTER TABLE clinicas
+        ADD COLUMN IF NOT EXISTS meta_page_id TEXT;
+    """)
 
     # Tabela de conversas — uma por (clínica, lead).
     cur.execute("""
@@ -832,7 +838,7 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
                      telefone_humano=None, whatsapp_token=None,
                      system_prompt=None, meta_dataset_id=None,
                      meta_capi_token=None, capi_ativo=None,
-                     meta_test_event_code=None):
+                     meta_test_event_code=None, meta_page_id=None):
     """
     Atualiza apenas os campos passados (não-None) de uma clínica.
     Strings vazias viram None pra telefone/token/campos CAPI (opcionais).
@@ -868,6 +874,9 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
     if meta_test_event_code is not None:
         campos.append("meta_test_event_code = %s")
         valores.append((meta_test_event_code or "").strip() or None)
+    if meta_page_id is not None:
+        campos.append("meta_page_id = %s")
+        valores.append((meta_page_id or "").strip() or None)
 
     if not campos:
         return

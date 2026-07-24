@@ -60,6 +60,11 @@ def enviar_evento(clinica, conversa, event_name, event_id,
         token = clinica["meta_capi_token"].strip()
 
         user_data = {"ctwa_clid": ctwa_clid}
+        # A Meta exige identificar a Página do anúncio nos eventos de mensagem.
+        # Sem isso ela recusa com "Falta a identificação da Página" (2804116).
+        page_id = (clinica.get("meta_page_id") or "").strip()
+        if page_id:
+            user_data["page_id"] = page_id
         if extra_user_data:
             user_data.update(extra_user_data)
 
