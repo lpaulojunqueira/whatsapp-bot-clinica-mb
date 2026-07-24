@@ -70,6 +70,9 @@ def enviar_evento(clinica, conversa, event_name, event_id,
             "messaging_channel": "whatsapp",
             "event_id": event_id,
             "user_data": user_data,
+            # Exigido pelos exemplos oficiais da CAPI de mensagens — sem isso a
+            # Meta aceita o POST mas não contabiliza o evento no dataset.
+            "messaging_outcome_data": {"outcome_type": "automatic_events"},
         }
         if custom_data:
             evento["custom_data"] = custom_data
