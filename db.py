@@ -1533,6 +1533,30 @@ def obter_agendamento(agendamento_id):
     return ag
 
 
+def obter_nome_lead(clinica_id, numero_lead):
+    """
+    Retorna o nome mais recente já registrado pra esse contato (de qualquer
+    agendamento — ativo, cancelado ou passado), ou None. Serve pra Ana não
+    perguntar o nome de novo quando o histórico de mensagens já saiu da janela.
+    """
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT nome_lead FROM agendamentos
+        WHERE clinica_id = %s AND numero_lead = %s
+          AND nome_lead IS NOT NULL AND TRIM(nome_lead) <> ''
+        ORDER BY criado_em DESC
+        LIMIT 1
+        """,
+        (clinica_id, numero_lead)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
+
+
 def buscar_agendamentos_ativos_lead(clinica_id, numero_lead):
     """Retorna os agendamentos confirmados (futuros) de um lead específico nessa clínica."""
     conn = _conectar()

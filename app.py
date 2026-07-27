@@ -36,6 +36,7 @@ from db import (
     remarcar_agendamento,
     obter_agendamento,
     buscar_agendamentos_ativos_lead,
+    obter_nome_lead,
     obter_config_horarios,
     listar_agendamentos,
     criar_bloqueio,
@@ -369,8 +370,13 @@ Você tem estas ferramentas pra agendar consultas:
 
 FLUXO IDEAL DE AGENDAMENTO:
 1. Lead manifesta interesse em marcar.
-2. Pergunta o NOME COMPLETO de forma natural (mesmo que ele já tenha dito o primeiro nome).
+2. Pergunta o NOME COMPLETO de forma natural, UMA ÚNICA VEZ.
    Exemplo: "Pra eu já deixar tudo certinho, qual seu nome completo?"
+   - Se o nome deste contato JÁ apareceu na conversa OU está informado no bloco
+     "PACIENTE JÁ IDENTIFICADO", NÃO pergunte de novo — use o nome que você já tem.
+   - Perguntar o nome mais de uma vez pra mesma pessoa (ex: ao remarcar) é um erro
+     grave: irrita o lead e pode fazer ele desistir. Só pergunte de novo se for
+     claramente outra pessoa (ex: marcando pra um familiar).
 3. Pergunta a preferência de dia/período (ele pode dizer "amanhã", "sexta de manhã", etc).
 4. Chama verificar_disponibilidade pro intervalo apropriado.
 5. Propõe horários reais ao lead. Se a lista de disponíveis tiver muitos horários,
@@ -1250,6 +1256,19 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
                 system_completo += _formatar_profissionais_pro_prompt(profissionais)
             system_completo += INSTRUCOES_AGENDAMENTO
             ferramentas_disponiveis = _ferramentas_lead(bool(profissionais))
+            # Nome já registrado deste contato (robusto à janela de histórico):
+            # evita a Ana perguntar o nome de novo ao remarcar/retornar.
+            if numero_lead:
+                nome_conhecido = obter_nome_lead(clinica["id"], numero_lead)
+                if nome_conhecido:
+                    system_completo += (
+                        "\n\n===== PACIENTE JÁ IDENTIFICADO =====\n"
+                        f"O nome completo deste contato já está registrado: {nome_conhecido}.\n"
+                        f"NÃO pergunte o nome de novo — use '{nome_conhecido}' ao criar ou "
+                        "remarcar agendamento. Só peça o nome se ficar claro que é outra "
+                        "pessoa (ex: marcando pra um familiar).\n"
+                        "================================================================="
+                    )
         executar_func = lambda nome, args: _executar_ferramenta(
             nome, args, clinica, conversa_id, numero_lead
         )
