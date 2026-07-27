@@ -161,6 +161,23 @@ def enviar_template_whatsapp(phone_number_id, numero_destino, template_name, par
         return False
 
 
+def _telefone_canonico(numero):
+    """
+    Reduz um telefone BR a DDD + 8 dígitos, ignorando o DDI (55) e o 9º dígito
+    do celular — que variam entre como o número é salvo e como o WhatsApp o envia.
+    Usado pra reconhecer o DONO da clínica de forma robusta (evita falhar por causa
+    do nono dígito). Retorna 10 dígitos (DDD + assinante) ou None.
+    """
+    d = re.sub(r"\D", "", numero or "")
+    if not d:
+        return None
+    if len(d) >= 12 and d.startswith("55"):
+        d = d[2:]            # tira o DDI
+    if len(d) == 11 and d[2] == "9":
+        d = d[:2] + d[3:]    # tira o 9º dígito do celular
+    return d[-10:] if len(d) >= 10 else d
+
+
 def _normalizar_telefone_br(telefone):
     """Limpa formatação e adiciona 55 se necessário. Retorna só os dígitos."""
     if not telefone:
@@ -1444,18 +1461,19 @@ def processar_mensagem_em_background(
         # Token específico da clínica (ou None = usa o global como fallback).
         token_clinica = clinica.get("whatsapp_token")
 
-        # MODO DONO: verifica se o número que enviou é o telefone_humano dessa clínica
+        # MODO DONO: verifica se o número que enviou é o telefone_humano dessa clínica.
+        # Comparação robusta (ignora DDI e o 9º dígito, que variam de formato).
         modo_dono = False
         tel_humano = clinica.get("telefone_humano")
         if tel_humano:
-            tel_humano_digitos = re.sub(r"\D", "", tel_humano)
-            numero_lead_digitos = re.sub(r"\D", "", numero_lead)
-            # Compara os 10 últimos dígitos (parte sem DDI)
-            if (tel_humano_digitos and numero_lead_digitos and
-                len(tel_humano_digitos) >= 10 and len(numero_lead_digitos) >= 10 and
-                tel_humano_digitos[-10:] == numero_lead_digitos[-10:]):
+            can_humano = _telefone_canonico(tel_humano)
+            can_lead = _telefone_canonico(numero_lead)
+            if can_humano and can_lead and can_humano == can_lead:
                 modo_dono = True
                 print(f"🔑 [{clinica['nome']}] MODO DONO ativado pra {numero_lead}")
+            else:
+                print(f"🙅 [{clinica['nome']}] não é dono: lead={numero_lead} "
+                      f"(canon={can_lead}) vs humano='{tel_humano}' (canon={can_humano})")
 
         print(f"🟢 [BG] modo_dono={modo_dono}, vai marcar como lida...")
         # 1) Mostra check azul + "digitando..." imediatamente
