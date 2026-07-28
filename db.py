@@ -75,6 +75,16 @@ def inicializar_banco():
         ADD COLUMN IF NOT EXISTS meta_page_id TEXT;
     """)
 
+    # Follow-up proativo (lembrete pré-consulta + reativação de lead frio).
+    # Cada tipo só dispara se tiver nome de template preenchido (e followup_ativo).
+    for coluna, tipo in [
+        ("followup_ativo", "BOOLEAN DEFAULT FALSE"),
+        ("followup_lembrete_hora", "TIME DEFAULT '08:00'"),
+        ("followup_template_lembrete", "TEXT"),
+        ("followup_template_frio", "TEXT"),
+    ]:
+        cur.execute(f"ALTER TABLE clinicas ADD COLUMN IF NOT EXISTS {coluna} {tipo};")
+
     # Tabela de conversas — uma por (clínica, lead).
     cur.execute("""
         CREATE TABLE IF NOT EXISTS conversas (
@@ -109,6 +119,12 @@ def inicializar_banco():
         cur.execute(
             f"ALTER TABLE conversas ADD COLUMN IF NOT EXISTS {coluna} {tipo};"
         )
+
+    # Lead pediu pra não receber mais follow-up (opt-out).
+    cur.execute("""
+        ALTER TABLE conversas
+        ADD COLUMN IF NOT EXISTS followup_optout BOOLEAN DEFAULT FALSE;
+    """)
 
     # Tabela de mensagens — histórico completo.
     cur.execute("""
@@ -269,6 +285,23 @@ def inicializar_banco():
             status TEXT,
             resposta TEXT,
             criado_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    # Follow-ups enviados. O UNIQUE serve de trava: garante 1 envio por
+    # (tipo, referência, tentativa), mesmo com vários workers rodando o agendador.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS followups (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            tipo TEXT NOT NULL,
+            ref_tipo TEXT NOT NULL,
+            ref_id INT NOT NULL,
+            tentativa INT NOT NULL DEFAULT 1,
+            status TEXT,
+            resposta TEXT,
+            criado_em TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (tipo, ref_tipo, ref_id, tentativa)
         );
     """)
 
@@ -541,6 +574,178 @@ def listar_agendamentos_para_reenvio_capi(dias=7):
         ORDER BY a.criado_em ASC
         """,
         (str(int(dias)),)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+# ============================================================
+# FOLLOW-UP (lembrete pré-consulta + reativação de lead frio)
+# ============================================================
+def followup_claim(clinica_id, tipo, ref_tipo, ref_id, tentativa=1):
+    """
+    Tenta 'reservar' o envio de um follow-up. Retorna True se reservou (você deve
+    enviar), False se outro worker/ciclo já pegou. A restrição UNIQUE da tabela é
+    a trava — garante 1 envio mesmo com vários workers rodando o agendador.
+    """
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO followups (clinica_id, tipo, ref_tipo, ref_id, tentativa, status)
+        VALUES (%s, %s, %s, %s, %s, 'processando')
+        ON CONFLICT (tipo, ref_tipo, ref_id, tentativa) DO NOTHING
+        RETURNING id
+        """,
+        (clinica_id, tipo, ref_tipo, ref_id, tentativa)
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row is not None
+
+
+def followup_resultado(tipo, ref_tipo, ref_id, tentativa, status, resposta=None):
+    """Atualiza o status de um follow-up já reservado (enviado / erro)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE followups SET status = %s, resposta = %s
+        WHERE tipo = %s AND ref_tipo = %s AND ref_id = %s AND tentativa = %s
+        """,
+        (status, (resposta or "")[:1000], tipo, ref_tipo, ref_id, tentativa)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def marcar_optout_conversa(conversa_id):
+    """Marca a conversa como opt-out de follow-up (lead pediu pra parar)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE conversas SET followup_optout = TRUE WHERE id = %s",
+        (conversa_id,)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def listar_agendamentos_lembrete(agora):
+    """
+    Agendamentos que devem receber lembrete AGORA: consulta hoje (fuso Brasília),
+    ainda por vir, já passou a hora configurada do lembrete, cliente com follow-up
+    ativo + template de lembrete, e lembrete ainda não enviado.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT a.id, a.clinica_id, a.numero_lead, a.nome_lead, a.data_hora,
+               cl.nome AS clinica_nome, cl.phone_number_id, cl.whatsapp_token,
+               cl.followup_template_lembrete
+        FROM agendamentos a
+        JOIN clinicas cl ON cl.id = a.clinica_id
+        WHERE cl.followup_ativo = TRUE
+          AND cl.followup_template_lembrete IS NOT NULL
+          AND cl.followup_template_lembrete <> ''
+          AND a.status = 'confirmado'
+          AND a.data_hora > %s
+          AND (a.data_hora AT TIME ZONE 'America/Sao_Paulo')::date
+              = (%s AT TIME ZONE 'America/Sao_Paulo')::date
+          AND (%s AT TIME ZONE 'America/Sao_Paulo')::time >= cl.followup_lembrete_hora
+          AND NOT EXISTS (
+              SELECT 1 FROM followups f
+              WHERE f.tipo = 'lembrete' AND f.ref_tipo = 'agendamento'
+                AND f.ref_id = a.id
+          )
+        ORDER BY a.data_hora ASC
+        """,
+        (agora, agora, agora)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def listar_conversas_frio_t1():
+    """
+    Conversas de lead frio pra 1ª tentativa: engajou (>=2 msgs), sem agendamento
+    futuro, não pausada, não opt-out, em silêncio entre 24h e 7 dias, cliente com
+    follow-up ativo + template de frio, e t1 ainda não enviada.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT c.id, c.numero_lead, c.clinica_id, cl.nome AS clinica_nome,
+               cl.phone_number_id, cl.whatsapp_token, cl.followup_template_frio
+        FROM conversas c
+        JOIN clinicas cl ON cl.id = c.clinica_id
+        JOIN mensagens m ON m.conversa_id = c.id
+        WHERE cl.followup_ativo = TRUE
+          AND cl.followup_template_frio IS NOT NULL AND cl.followup_template_frio <> ''
+          AND COALESCE(c.pausada, FALSE) = FALSE
+          AND COALESCE(c.followup_optout, FALSE) = FALSE
+          AND NOT EXISTS (SELECT 1 FROM agendamentos a
+                          WHERE a.conversa_id = c.id AND a.status = 'confirmado'
+                            AND a.data_hora > NOW())
+          AND NOT EXISTS (SELECT 1 FROM followups f
+                          WHERE f.tipo = 'frio' AND f.ref_tipo = 'conversa'
+                            AND f.ref_id = c.id AND f.tentativa = 1)
+        GROUP BY c.id, c.numero_lead, c.clinica_id, cl.nome, cl.phone_number_id,
+                 cl.whatsapp_token, cl.followup_template_frio
+        HAVING COUNT(m.id) >= 2
+           AND MAX(m.criada_em) < NOW() - INTERVAL '24 hours'
+           AND MAX(m.criada_em) > NOW() - INTERVAL '7 days'
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def listar_conversas_frio_t2():
+    """
+    Conversas pra 2ª tentativa de lead frio: t1 enviada há >= 48h, lead NÃO
+    respondeu depois do t1, sem agendamento futuro, não pausada/opt-out, e t2
+    ainda não enviada.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT c.id, c.numero_lead, c.clinica_id, cl.nome AS clinica_nome,
+               cl.phone_number_id, cl.whatsapp_token, cl.followup_template_frio
+        FROM conversas c
+        JOIN clinicas cl ON cl.id = c.clinica_id
+        JOIN mensagens m ON m.conversa_id = c.id
+        JOIN followups f1 ON f1.ref_tipo = 'conversa' AND f1.ref_id = c.id
+                         AND f1.tipo = 'frio' AND f1.tentativa = 1
+                         AND f1.status = 'enviado'
+        WHERE cl.followup_ativo = TRUE
+          AND cl.followup_template_frio IS NOT NULL AND cl.followup_template_frio <> ''
+          AND COALESCE(c.pausada, FALSE) = FALSE
+          AND COALESCE(c.followup_optout, FALSE) = FALSE
+          AND f1.criado_em < NOW() - INTERVAL '48 hours'
+          AND NOT EXISTS (SELECT 1 FROM agendamentos a
+                          WHERE a.conversa_id = c.id AND a.status = 'confirmado'
+                            AND a.data_hora > NOW())
+          AND NOT EXISTS (SELECT 1 FROM followups f
+                          WHERE f.tipo = 'frio' AND f.ref_tipo = 'conversa'
+                            AND f.ref_id = c.id AND f.tentativa = 2)
+        GROUP BY c.id, c.numero_lead, c.clinica_id, cl.nome, cl.phone_number_id,
+                 cl.whatsapp_token, cl.followup_template_frio, f1.criado_em
+        HAVING MAX(m.criada_em) < f1.criado_em
+        """
     )
     rows = cur.fetchall()
     cur.close()
@@ -905,7 +1110,9 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
                      telefone_humano=None, whatsapp_token=None,
                      system_prompt=None, meta_dataset_id=None,
                      meta_capi_token=None, capi_ativo=None,
-                     meta_test_event_code=None, meta_page_id=None):
+                     meta_test_event_code=None, meta_page_id=None,
+                     followup_ativo=None, followup_lembrete_hora=None,
+                     followup_template_lembrete=None, followup_template_frio=None):
     """
     Atualiza apenas os campos passados (não-None) de uma clínica.
     Strings vazias viram None pra telefone/token/campos CAPI (opcionais).
@@ -944,6 +1151,18 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
     if meta_page_id is not None:
         campos.append("meta_page_id = %s")
         valores.append((meta_page_id or "").strip() or None)
+    if followup_ativo is not None:
+        campos.append("followup_ativo = %s")
+        valores.append(bool(followup_ativo))
+    if followup_lembrete_hora is not None:
+        campos.append("followup_lembrete_hora = %s")
+        valores.append((followup_lembrete_hora or "").strip() or "08:00")
+    if followup_template_lembrete is not None:
+        campos.append("followup_template_lembrete = %s")
+        valores.append((followup_template_lembrete or "").strip() or None)
+    if followup_template_frio is not None:
+        campos.append("followup_template_frio = %s")
+        valores.append((followup_template_frio or "").strip() or None)
 
     if not campos:
         return

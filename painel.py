@@ -2734,6 +2734,29 @@ ADMIN_HTML = """
         </label>
       </div>
 
+      <div style="margin-top:8px; padding-top:16px; border-top:1px solid var(--cinza-borda);">
+        <div style="font-size:14px; font-weight:600; margin-bottom:4px;">Follow-up automático</div>
+        <div class="card-sub" style="margin-bottom:14px;">
+          Lembrete no dia da consulta e reativação de lead frio (24h/72h). Precisa dos
+          templates aprovados na Meta. Cada tipo só dispara se o nome do template estiver
+          preenchido e o follow-up estiver ativo.
+        </div>
+
+        <label>Hora do lembrete <span class="label-dica">— no dia da consulta (ex: horário de abertura)</span></label>
+        <input type="time" id="ed-fu-hora" style="max-width:160px;">
+
+        <label>Template do lembrete <span class="label-dica">— nome do template aprovado (3 variáveis: nome, data, hora)</span></label>
+        <input type="text" id="ed-fu-tpl-lembrete" placeholder="Ex: lembrete_consulta" autocomplete="off">
+
+        <label>Template de lead frio <span class="label-dica">— nome do template aprovado (sem variáveis)</span></label>
+        <input type="text" id="ed-fu-tpl-frio" placeholder="Ex: reativacao_lead" autocomplete="off">
+
+        <label style="display:inline-flex; align-items:center; gap:8px; font-weight:400; cursor:pointer; margin-top:4px;">
+          <input type="checkbox" id="ed-fu-ativo" style="width:auto; margin:0;">
+          Follow-up ativo para este cliente
+        </label>
+      </div>
+
       <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:16px;">
         <button type="button" class="btn btn-pequeno" onclick="fecharEdicaoCliente()">Cancelar</button>
         <button type="submit" class="btn btn-verde">Salvar mudanças</button>
@@ -2997,6 +3020,11 @@ async function abrirEdicaoCliente(clinicaId) {
   document.getElementById('ed-meta-token').value = '';
   document.getElementById('ed-meta-testcode').value = c.meta_test_event_code || '';
   document.getElementById('ed-capi-ativo').checked = !!c.capi_ativo;
+  // Follow-up. A hora vem como "HH:MM:SS" — o input time aceita "HH:MM".
+  document.getElementById('ed-fu-hora').value = (c.followup_lembrete_hora || '08:00').substring(0,5);
+  document.getElementById('ed-fu-tpl-lembrete').value = c.followup_template_lembrete || '';
+  document.getElementById('ed-fu-tpl-frio').value = c.followup_template_frio || '';
+  document.getElementById('ed-fu-ativo').checked = !!c.followup_ativo;
   document.getElementById('modal-edicao').style.display = 'flex';
 }
 
@@ -3017,6 +3045,10 @@ async function salvarEdicaoCliente(e) {
     meta_page_id: document.getElementById('ed-meta-pageid').value.trim(),
     meta_test_event_code: document.getElementById('ed-meta-testcode').value.trim(),
     capi_ativo: document.getElementById('ed-capi-ativo').checked,
+    followup_ativo: document.getElementById('ed-fu-ativo').checked,
+    followup_lembrete_hora: document.getElementById('ed-fu-hora').value.trim(),
+    followup_template_lembrete: document.getElementById('ed-fu-tpl-lembrete').value.trim(),
+    followup_template_frio: document.getElementById('ed-fu-tpl-frio').value.trim(),
   };
   // Token só vai se foi digitado (em branco = mantém o atual, não apaga).
   const metaToken = document.getElementById('ed-meta-token').value.trim();
@@ -3562,6 +3594,10 @@ def registrar_rotas(app):
                 capi_ativo=body.get("capi_ativo"),
                 meta_test_event_code=body.get("meta_test_event_code"),
                 meta_page_id=body.get("meta_page_id"),
+                followup_ativo=body.get("followup_ativo"),
+                followup_lembrete_hora=body.get("followup_lembrete_hora"),
+                followup_template_lembrete=body.get("followup_template_lembrete"),
+                followup_template_frio=body.get("followup_template_frio"),
             )
             return jsonify({"ok": True})
         except Exception as e:

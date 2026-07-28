@@ -43,6 +43,12 @@ from db import (
     remover_bloqueio,
     listar_bloqueios,
     listar_profissionais,
+    followup_claim,
+    followup_resultado,
+    marcar_optout_conversa,
+    listar_agendamentos_lembrete,
+    listar_conversas_frio_t1,
+    listar_conversas_frio_t2,
 )
 from painel import registrar_rotas as registrar_rotas_painel
 import capi
@@ -138,18 +144,22 @@ def enviar_template_whatsapp(phone_number_id, numero_destino, template_name, par
         "Authorization": f"Bearer {token or WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
+    template = {
+        "name": template_name,
+        "language": {"code": "pt_BR"},
+    }
+    # Só inclui o componente de corpo se o template tem variáveis. Template sem
+    # variáveis (ex: lead frio genérico) não pode receber 'parameters' vazio.
+    if parametros_body:
+        template["components"] = [{
+            "type": "body",
+            "parameters": [{"type": "text", "text": str(p)} for p in parametros_body],
+        }]
     payload = {
         "messaging_product": "whatsapp",
         "to": numero_destino,
         "type": "template",
-        "template": {
-            "name": template_name,
-            "language": {"code": "pt_BR"},
-            "components": [{
-                "type": "body",
-                "parameters": [{"type": "text", "text": str(p)} for p in parametros_body],
-            }],
-        },
+        "template": template,
     }
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -1608,6 +1618,96 @@ def processar_mensagem_em_background(
 
 
 # ============================================================
+# FOLLOW-UP (agendador proativo em background)
+# ============================================================
+FOLLOWUP_OPTOUT_FRASES = [
+    "não quero mais", "nao quero mais", "parar de receber", "pare de receber",
+    "pare de me mandar", "para de me mandar", "sair da lista", "me descadastr",
+    "não me mande", "nao me mande", "não me manda", "nao me manda",
+    "quero sair", "cancelar inscri", "descadastrar",
+]
+
+
+def _texto_pede_optout(texto):
+    """Detecta pedido explícito de parar de receber follow-up (conservador)."""
+    t = (texto or "").lower()
+    return any(frase in t for frase in FOLLOWUP_OPTOUT_FRASES)
+
+
+def _enviar_lembretes():
+    """Dispara os lembretes de consulta que estão na hora (mesmo dia)."""
+    agora = _agora_brasil()
+    for ag in listar_agendamentos_lembrete(agora):
+        # Trava: só um worker/ciclo envia este lembrete.
+        if not followup_claim(ag["clinica_id"], "lembrete", "agendamento", ag["id"], 1):
+            continue
+        try:
+            nome = (ag.get("nome_lead") or "").strip().split(" ")[0] or "Olá"
+            data_fmt = _formatar_data_extensa(ag["data_hora"])
+            hora_fmt = ag["data_hora"].strftime("%H:%M")
+            ok = enviar_template_whatsapp(
+                ag["phone_number_id"], ag["numero_lead"],
+                ag["followup_template_lembrete"],
+                [nome, data_fmt, hora_fmt],
+                token=ag.get("whatsapp_token"),
+            )
+            followup_resultado("lembrete", "agendamento", ag["id"], 1,
+                               "enviado" if ok else "erro")
+            print(f"⏰ Lembrete {'enviado' if ok else 'FALHOU'} ag#{ag['id']} "
+                  f"({ag['clinica_nome']}) pra {ag['numero_lead']}")
+        except Exception as e:
+            followup_resultado("lembrete", "agendamento", ag["id"], 1, "erro", str(e))
+            print(f"❌ Erro no lembrete ag#{ag['id']}: {e}")
+
+
+def _enviar_frio(conv, tentativa):
+    try:
+        ok = enviar_template_whatsapp(
+            conv["phone_number_id"], conv["numero_lead"],
+            conv["followup_template_frio"], [],  # template genérico, sem variáveis
+            token=conv.get("whatsapp_token"),
+        )
+        followup_resultado("frio", "conversa", conv["id"], tentativa,
+                           "enviado" if ok else "erro")
+        print(f"🔁 Follow-up frio t{tentativa} {'enviado' if ok else 'FALHOU'} "
+              f"conversa#{conv['id']} ({conv['clinica_nome']}) pra {conv['numero_lead']}")
+    except Exception as e:
+        followup_resultado("frio", "conversa", conv["id"], tentativa, "erro", str(e))
+        print(f"❌ Erro no follow-up frio conversa#{conv['id']}: {e}")
+
+
+def _enviar_frios():
+    """Reativa leads frios (24h e 72h), só em horário civilizado (8h–20h)."""
+    if not (8 <= _agora_brasil().hour < 20):
+        return
+    for conv in listar_conversas_frio_t1():
+        if not followup_claim(conv["clinica_id"], "frio", "conversa", conv["id"], 1):
+            continue
+        _enviar_frio(conv, 1)
+    for conv in listar_conversas_frio_t2():
+        if not followup_claim(conv["clinica_id"], "frio", "conversa", conv["id"], 2):
+            continue
+        _enviar_frio(conv, 2)
+
+
+def _loop_followup():
+    """Acorda a cada 10 min e processa os follow-ups pendentes."""
+    time.sleep(45)  # deixa o app terminar de subir antes do 1º ciclo
+    while True:
+        try:
+            _enviar_lembretes()
+            _enviar_frios()
+        except Exception as e:
+            print(f"❌ Erro no loop de follow-up: {e}")
+        time.sleep(600)
+
+
+def iniciar_agendador_followup():
+    threading.Thread(target=_loop_followup, daemon=True).start()
+    print("✅ Agendador de follow-up iniciado.")
+
+
+# ============================================================
 # ROTAS
 # ============================================================
 @app.route("/webhook", methods=["GET"])
@@ -1674,6 +1774,10 @@ def receive_message():
                         if referral:
                             salvar_referral_conversa(conversa_id, referral)
                             print(f"🎯 Referral capturado (ctwa_clid={referral.get('ctwa_clid')})")
+                        # Opt-out de follow-up: lead pediu pra parar de receber.
+                        if _texto_pede_optout(texto):
+                            marcar_optout_conversa(conversa_id)
+                            print(f"🚫 Opt-out de follow-up marcado pra {sender}")
 
                         # Dispara processamento em segundo plano (texto).
                         threading.Thread(
@@ -1755,6 +1859,12 @@ except Exception as e:
 # Anexa todas as rotas do painel web ao app principal.
 registrar_rotas_painel(app)
 print("✅ Painel web registrado em /painel")
+
+# Agendador de follow-up (inerte enquanto nenhum cliente tiver follow-up ativo).
+try:
+    iniciar_agendador_followup()
+except Exception as e:
+    print(f"⚠️  Não foi possível iniciar o agendador de follow-up: {e}")
 
 
 if __name__ == "__main__":
