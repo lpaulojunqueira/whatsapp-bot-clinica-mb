@@ -1047,12 +1047,12 @@ PAINEL_HTML = """
       <img src="/static/logo-converte.png" alt="Converte.ai">
     </div>
     <nav class="header-abas">
-      <button type="button" class="aba-principal aba-ativa" data-view="conversas"
+      <button type="button" class="aba-principal aba-ativa" data-view="resultados"
+              onclick="trocarView('resultados')">Dashboard</button>
+      <button type="button" class="aba-principal" data-view="conversas"
               onclick="trocarView('conversas')">Conversas</button>
       <button type="button" class="aba-principal" data-view="agenda"
               onclick="trocarView('agenda')">Agenda</button>
-      <button type="button" class="aba-principal" data-view="resultados"
-              onclick="trocarView('resultados')">Resultados</button>
     </nav>
     <div class="header-user">
       <div class="user-info">
