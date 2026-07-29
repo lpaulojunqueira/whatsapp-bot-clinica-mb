@@ -56,6 +56,8 @@ from db import (
     capi_evento_ja_enviado,
     diagnostico_capi,
     dashboard_resultados,
+    dashboard_conversas_por_dia,
+    dashboard_capi_resumo,
 )
 import capi
 
@@ -641,6 +643,15 @@ PAINEL_HTML = """
   .res-funil-barra-bg { flex: 1; background: var(--cinza-divisor); border-radius: 6px; height: 26px; overflow: hidden; }
   .res-funil-barra { height: 100%; background: var(--verde); border-radius: 6px; min-width: 2px; transition: width .3s; }
   .res-funil-num { width: 90px; text-align: right; font-size: 14px; font-weight: 700; color: var(--carvao); }
+  .res-graf { display: flex; align-items: flex-end; gap: 4px; height: 140px; overflow-x: auto; padding-top: 8px; }
+  .res-graf-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 22px; flex: 1; }
+  .res-graf-barra { width: 60%; min-width: 8px; background: var(--verde); border-radius: 3px 3px 0 0; min-height: 2px; }
+  .res-graf-n { font-size: 10px; color: var(--carvao); font-weight: 600; margin-bottom: 2px; }
+  .res-graf-dia { font-size: 9px; color: var(--cinza-fraco); margin-top: 4px; white-space: nowrap; }
+  .res-capi-linha { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--cinza-divisor); font-size: 13px; }
+  .res-capi-linha:last-child { border-bottom: none; }
+  .res-capi-nome { flex: 1; font-weight: 600; color: var(--carvao); }
+  .res-capi-badge { font-size: 12px; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
 
   /* ============================================================ */
   /* AGENDA (view semanal tipo Google Calendar)                    */
@@ -1679,7 +1690,61 @@ function renderResultados(d) {
         <div class="res-funil-num">${d.vendas}</div>
       </div>
     </div>
+
+    <div class="res-card" style="margin-top:14px;">
+      <div class="rotulo" style="margin-bottom:14px;">Conversas por dia</div>
+      ${renderGrafico(d.por_dia || [])}
+    </div>
+
+    ${renderCapiRegua(d)}
   `;
+}
+
+function renderGrafico(porDia) {
+  if (!porDia.length) return '<div style="color:var(--cinza-fraco); font-size:13px;">Sem conversas no período.</div>';
+  const max = Math.max(1, ...porDia.map(x => x.n));
+  const cols = porDia.map(x => {
+    const h = Math.max(2, Math.round(120 * x.n / max));
+    const d = new Date(x.dia + 'T00:00:00');
+    const rot = String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
+    return `<div class="res-graf-col">
+      <div class="res-graf-n">${x.n}</div>
+      <div class="res-graf-barra" style="height:${h}px" title="${rot}: ${x.n}"></div>
+      <div class="res-graf-dia">${rot}</div>
+    </div>`;
+  }).join('');
+  return '<div class="res-graf">' + cols + '</div>';
+}
+
+function renderCapiRegua(d) {
+  const capi = d.capi || {};
+  const nomes = Object.keys(capi);
+  if (!nomes.length) {
+    return `<div class="res-card" style="margin-top:14px;">
+      <div class="rotulo" style="margin-bottom:8px;">Enviado pra Meta (rastreamento)</div>
+      <div style="font-size:13px; color:var(--cinza-texto);">Nenhum evento enviado no período (cliente sem rastreamento ativo, ou nenhum lead de anúncio converteu).</div>
+    </div>`;
+  }
+  const linhas = nomes.map(n => {
+    const e = capi[n];
+    const badge = e.erros > 0
+      ? `<span class="res-capi-badge" style="background:var(--vermelho-bg); color:var(--vermelho);">${e.erros} erro(s)</span>`
+      : '';
+    return `<div class="res-capi-linha">
+      <div class="res-capi-nome">${escapar(n)}</div>
+      <span class="res-capi-badge" style="background:var(--verde-claro); color:var(--verde-escuro);">${e.enviados} enviado(s)</span>
+      ${badge}
+    </div>`;
+  }).join('');
+  return `<div class="res-card" style="margin-top:14px;">
+    <div class="rotulo" style="margin-bottom:8px;">Enviado pra Meta (rastreamento)</div>
+    ${linhas}
+    <div style="font-size:11px; color:var(--cinza-texto); margin-top:10px; line-height:1.5;">
+      "Enviado" = nosso servidor mandou e a Meta respondeu 200. Se o Gerenciador de
+      Eventos da Meta mostrar menos que isso, o gap é do lado da atribuição da Meta,
+      não do nosso envio.
+    </div>
+  </div>`;
 }
 
 // ============================================================
@@ -3549,7 +3614,10 @@ def registrar_rotas(app):
             fim = fim + timedelta(days=1)  # inclui o dia final inteiro
         except Exception:
             return jsonify({"erro": "datas inválidas (use YYYY-MM-DD)"}), 400
-        return jsonify(dashboard_resultados(clinica_id, ini, fim))
+        res = dashboard_resultados(clinica_id, ini, fim)
+        res["por_dia"] = dashboard_conversas_por_dia(clinica_id, ini, fim)
+        res["capi"] = dashboard_capi_resumo(clinica_id, ini, fim)
+        return jsonify(res)
 
     @app.route("/painel/api/conversas", methods=["GET"])
     @login_required

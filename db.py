@@ -817,6 +817,51 @@ def dashboard_resultados(clinica_id, data_inicio, data_fim):
     }
 
 
+def dashboard_conversas_por_dia(clinica_id, data_inicio, data_fim):
+    """Conversas iniciadas por dia (fuso Brasília) no período — pro gráfico."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT (criada_em AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
+               COUNT(*) AS n
+        FROM conversas
+        WHERE clinica_id = %s AND criada_em >= %s AND criada_em < %s
+        GROUP BY 1 ORDER BY 1
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [{"dia": r["dia"].isoformat(), "n": r["n"]} for r in rows]
+
+
+def dashboard_capi_resumo(clinica_id, data_inicio, data_fim):
+    """
+    Quantos eventos CAPI foram ENVIADOS com sucesso (Meta respondeu 200) vs erro,
+    por tipo, no período. É a régua pra comparar 'nosso número' com o que de fato
+    saiu pra Meta e diagnosticar o gap de contabilização.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT event_name,
+               COUNT(*) FILTER (WHERE status = 'enviado') AS enviados,
+               COUNT(*) FILTER (WHERE status <> 'enviado') AS erros
+        FROM capi_eventos
+        WHERE clinica_id = %s AND criado_em >= %s AND criado_em < %s
+        GROUP BY event_name
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {r["event_name"]: {"enviados": r["enviados"], "erros": r["erros"]} for r in rows}
+
+
 def diagnostico_capi():
     """
     Fotografia do estado do rastreamento pra depuração (admin): config CAPI de
