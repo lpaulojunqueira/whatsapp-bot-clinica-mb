@@ -3554,6 +3554,9 @@ def registrar_rotas(app):
             return jsonify({"erro": "não encontrada"}), 404
         if clinica.get("criada_em"):
             clinica["criada_em"] = clinica["criada_em"].isoformat()
+        # followup_lembrete_hora é um time do Postgres — não serializa direto em JSON.
+        if clinica.get("followup_lembrete_hora") is not None:
+            clinica["followup_lembrete_hora"] = clinica["followup_lembrete_hora"].strftime("%H:%M:%S")
         return jsonify(clinica)
 
     @app.route("/painel/admin/clinicas/<int:clinica_id>/prompt", methods=["PATCH"])
