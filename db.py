@@ -753,6 +753,66 @@ def listar_conversas_frio_t2():
     return rows
 
 
+def dashboard_resultados(clinica_id, data_inicio, data_fim):
+    """
+    KPIs do funil de uma clínica no período (dados de primeira mão do próprio
+    sistema): conversas, quantas vieram de anúncio, agendamentos, vendas,
+    faturamento e a conversão lead→venda. Cada evento é contado pelo seu próprio
+    timestamp (conversa=criada_em, agendamento=criado_em, venda=registrada_em).
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+
+    cur.execute(
+        """
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE ctwa_clid IS NOT NULL) AS de_anuncio,
+          COUNT(*) FILTER (WHERE ctwa_clid IS NULL) AS diretas
+        FROM conversas
+        WHERE clinica_id = %s AND criada_em >= %s AND criada_em < %s
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    conv = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS n FROM agendamentos
+        WHERE clinica_id = %s AND status = 'confirmado'
+          AND criado_em >= %s AND criado_em < %s
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    agendamentos = cur.fetchone()["n"]
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS n, COALESCE(SUM(valor), 0) AS total
+        FROM vendas
+        WHERE clinica_id = %s AND registrada_em >= %s AND registrada_em < %s
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    v = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    total = conv["total"] or 0
+    vendas_n = v["n"] or 0
+    return {
+        "conversas": total,
+        "conversas_anuncio": conv["de_anuncio"] or 0,
+        "conversas_direto": conv["diretas"] or 0,
+        "agendamentos": agendamentos or 0,
+        "vendas": vendas_n,
+        "faturamento": float(v["total"] or 0),
+        "lead_venda_pct": round(100.0 * vendas_n / total, 1) if total else 0.0,
+        "agend_conversa_pct": round(100.0 * (agendamentos or 0) / total, 1) if total else 0.0,
+    }
+
+
 def diagnostico_capi():
     """
     Fotografia do estado do rastreamento pra depuração (admin): config CAPI de

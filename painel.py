@@ -55,6 +55,7 @@ from db import (
     listar_agendamentos_para_reenvio_capi,
     capi_evento_ja_enviado,
     diagnostico_capi,
+    dashboard_resultados,
 )
 import capi
 
@@ -611,6 +612,36 @@ PAINEL_HTML = """
     .aba-principal { padding: 6px 10px; font-size: 12px; }
   }
 
+  /* ===== RESULTADOS ===== */
+  .res-periodo {
+    background: #fff; border: 1.5px solid var(--cinza-borda); color: var(--carvao);
+    padding: 8px 16px; border-radius: 8px; font-family: inherit; font-size: 13px;
+    font-weight: 600; cursor: pointer; transition: all .15s;
+  }
+  .res-periodo:hover { border-color: var(--verde); }
+  .res-periodo.aba-ativa { background: var(--verde); color: #fff; border-color: var(--verde); }
+  .res-cards {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px; margin-bottom: 24px;
+  }
+  .res-card {
+    background: #fff; border: 1px solid var(--cinza-borda); border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .res-card .rotulo {
+    font-size: 11px; font-weight: 600; color: var(--cinza-fraco);
+    text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px;
+  }
+  .res-card .valor { font-size: 28px; font-weight: 700; color: var(--carvao); line-height: 1; }
+  .res-card .sub { font-size: 12px; color: var(--cinza-texto); margin-top: 6px; }
+  .res-funil-linha {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+  }
+  .res-funil-rot { width: 130px; font-size: 13px; color: var(--carvao); font-weight: 600; }
+  .res-funil-barra-bg { flex: 1; background: var(--cinza-divisor); border-radius: 6px; height: 26px; overflow: hidden; }
+  .res-funil-barra { height: 100%; background: var(--verde); border-radius: 6px; min-width: 2px; transition: width .3s; }
+  .res-funil-num { width: 90px; text-align: right; font-size: 14px; font-weight: 700; color: var(--carvao); }
+
   /* ============================================================ */
   /* AGENDA (view semanal tipo Google Calendar)                    */
   /* ============================================================ */
@@ -1009,6 +1040,8 @@ PAINEL_HTML = """
               onclick="trocarView('conversas')">Conversas</button>
       <button type="button" class="aba-principal" data-view="agenda"
               onclick="trocarView('agenda')">Agenda</button>
+      <button type="button" class="aba-principal" data-view="resultados"
+              onclick="trocarView('resultados')">Resultados</button>
     </nav>
     <div class="header-user">
       <div class="user-info">
@@ -1158,6 +1191,38 @@ PAINEL_HTML = """
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- =========================== VIEW: RESULTADOS =========================== -->
+  <div class="main view-resultados" id="view-resultados" style="display:none; overflow:auto;">
+    <div style="flex:1; padding:24px; max-width:1100px; margin:0 auto; width:100%;">
+      <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:18px;">
+        <div>
+          <div style="font-size:20px; font-weight:700; color:var(--carvao);">Resultados</div>
+          <div style="font-size:13px; color:var(--cinza-texto);">Funil de leads, agendamentos e vendas no período.</div>
+        </div>
+        {% if eh_admin %}
+        <select id="res-cliente" onchange="carregarResultados()"
+                style="padding:8px 10px; border:1.5px solid var(--cinza-borda); border-radius:8px;
+                       font-family:inherit; font-size:14px; font-weight:600; color:var(--carvao);
+                       background:#fff; cursor:pointer; min-width:200px;">
+          <option value="">Selecione um cliente</option>
+        </select>
+        {% endif %}
+      </div>
+
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:20px;">
+        <button type="button" class="res-periodo aba-ativa" data-dias="7" onclick="resPeriodo(7)">7 dias</button>
+        <button type="button" class="res-periodo" data-dias="30" onclick="resPeriodo(30)">30 dias</button>
+        <button type="button" class="res-periodo" data-dias="90" onclick="resPeriodo(90)">90 dias</button>
+      </div>
+
+      <div id="res-conteudo">
+        <div style="padding:40px; text-align:center; color:var(--cinza-fraco);">
+          {% if eh_admin %}Selecione um cliente pra ver os resultados.{% else %}Carregando...{% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Modal de detalhe do agendamento/bloqueio -->
@@ -1492,6 +1557,8 @@ function trocarView(nome) {
     (nome === 'conversas') ? '' : 'none';
   document.getElementById('view-agenda').style.display =
     (nome === 'agenda') ? '' : 'none';
+  document.getElementById('view-resultados').style.display =
+    (nome === 'resultados') ? '' : 'none';
 
   // Limpa classes de estado da outra view pra não contaminar o layout mobile
   if (nome === 'agenda') {
@@ -1499,6 +1566,120 @@ function trocarView(nome) {
     document.body.classList.remove('conversa-aberta');
     inicializarAgendaSePreciso();
   }
+  if (nome === 'resultados') {
+    document.body.classList.remove('conversa-aberta');
+    inicializarResultadosSePreciso();
+  }
+}
+
+// ============================================================
+// RESULTADOS (dashboard do funil)
+// ============================================================
+let resDias = 7;
+let resClinicaId = null;
+let resInicializado = false;
+
+function inicializarResultadosSePreciso() {
+  if (resInicializado) return;
+  resInicializado = true;
+  const sel = document.getElementById('res-cliente');
+  if (sel) {
+    // Admin: popula o dropdown de clientes (reusa a lista de usuários/clínicas)
+    fetch('/painel/admin/usuarios').then(r => r.ok ? r.json() : []).then(cs => {
+      sel.innerHTML = '<option value="">Selecione um cliente</option>' +
+        cs.map(c => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
+    }).catch(() => {});
+  } else {
+    // Cliente comum: já é a clínica da sessão
+    resClinicaId = 'meu';
+    carregarResultados();
+  }
+}
+
+function resPeriodo(dias) {
+  resDias = dias;
+  document.querySelectorAll('.res-periodo').forEach(b => {
+    b.classList.toggle('aba-ativa', parseInt(b.dataset.dias, 10) === dias);
+  });
+  carregarResultados();
+}
+
+function fmtBRL(v) {
+  return 'R$ ' + (v || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+async function carregarResultados() {
+  const sel = document.getElementById('res-cliente');
+  if (sel) resClinicaId = sel.value ? parseInt(sel.value, 10) : null;
+  if (!resClinicaId) {
+    document.getElementById('res-conteudo').innerHTML =
+      '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Selecione um cliente pra ver os resultados.</div>';
+    return;
+  }
+  const hoje = new Date();
+  const ini = new Date(hoje); ini.setDate(ini.getDate() - (resDias - 1));
+  const params = new URLSearchParams({ inicio: iso(ini), fim: iso(hoje) });
+  if (resClinicaId !== 'meu') params.set('clinica_id', resClinicaId);
+
+  document.getElementById('res-conteudo').innerHTML =
+    '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Carregando...</div>';
+
+  const r = await fetch('/painel/api/resultados?' + params);
+  if (!r.ok) {
+    document.getElementById('res-conteudo').innerHTML =
+      '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Erro ao carregar.</div>';
+    return;
+  }
+  const d = await r.json();
+  renderResultados(d);
+}
+
+function renderResultados(d) {
+  const conv = d.conversas || 0;
+  const barra = (n) => conv > 0 ? Math.max(2, Math.round(100 * n / conv)) : 0;
+  document.getElementById('res-conteudo').innerHTML = `
+    <div class="res-cards">
+      <div class="res-card">
+        <div class="rotulo">Conversas</div>
+        <div class="valor">${conv}</div>
+        <div class="sub">${d.conversas_anuncio} de anúncio · ${d.conversas_direto} diretas</div>
+      </div>
+      <div class="res-card">
+        <div class="rotulo">Agendamentos</div>
+        <div class="valor">${d.agendamentos}</div>
+        <div class="sub">${d.agend_conversa_pct}% das conversas</div>
+      </div>
+      <div class="res-card">
+        <div class="rotulo">Vendas</div>
+        <div class="valor">${d.vendas}</div>
+        <div class="sub">registradas no período</div>
+      </div>
+      <div class="res-card">
+        <div class="rotulo">Faturamento</div>
+        <div class="valor" style="color:var(--verde-escuro)">${fmtBRL(d.faturamento)}</div>
+        <div class="sub">Lead → venda: ${d.lead_venda_pct}%</div>
+      </div>
+    </div>
+
+    <div class="res-card">
+      <div class="rotulo" style="margin-bottom:14px;">Funil</div>
+      <div class="res-funil-linha">
+        <div class="res-funil-rot">Conversas</div>
+        <div class="res-funil-barra-bg"><div class="res-funil-barra" style="width:${barra(conv)}%"></div></div>
+        <div class="res-funil-num">${conv}</div>
+      </div>
+      <div class="res-funil-linha">
+        <div class="res-funil-rot">Agendaram</div>
+        <div class="res-funil-barra-bg"><div class="res-funil-barra" style="width:${barra(d.agendamentos)}%; background:#3B82F6;"></div></div>
+        <div class="res-funil-num">${d.agendamentos}</div>
+      </div>
+      <div class="res-funil-linha">
+        <div class="res-funil-rot">Venderam</div>
+        <div class="res-funil-barra-bg"><div class="res-funil-barra" style="width:${barra(d.vendas)}%; background:var(--verde-escuro);"></div></div>
+        <div class="res-funil-num">${d.vendas}</div>
+      </div>
+    </div>
+  `;
 }
 
 // ============================================================
@@ -3346,6 +3527,28 @@ def registrar_rotas(app):
         return redirect(url_for("painel_login_page"))
 
     # ---------- API JSON ----------
+    @app.route("/painel/api/resultados", methods=["GET"])
+    @login_required
+    def api_resultados():
+        """KPIs do funil no período. Cliente comum: sua clínica. Admin: ?clinica_id=X."""
+        from datetime import datetime, timezone, timedelta
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None:
+            clinica_id = clinica_sessao
+        else:
+            cid = request.args.get("clinica_id")
+            if not cid or not str(cid).isdigit():
+                return jsonify({"erro": "clinica_id obrigatório pra admin"}), 400
+            clinica_id = int(cid)
+        try:
+            tz = timezone(timedelta(hours=-3))
+            ini = datetime.strptime(request.args.get("inicio"), "%Y-%m-%d").replace(tzinfo=tz)
+            fim = datetime.strptime(request.args.get("fim"), "%Y-%m-%d").replace(tzinfo=tz)
+            fim = fim + timedelta(days=1)  # inclui o dia final inteiro
+        except Exception:
+            return jsonify({"erro": "datas inválidas (use YYYY-MM-DD)"}), 400
+        return jsonify(dashboard_resultados(clinica_id, ini, fim))
+
     @app.route("/painel/api/conversas", methods=["GET"])
     @login_required
     def api_listar_conversas():
