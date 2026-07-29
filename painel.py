@@ -2342,6 +2342,8 @@ setInterval(() => {
   carregarConversas();
   if (conversaSelecionada) abrirConversa(conversaSelecionada);
 }, 5000);
+// Abre no Resultados: as métricas são a primeira coisa que o cliente vê.
+trocarView('resultados');
 </script>
 </body>
 </html>
