@@ -58,6 +58,7 @@ from db import (
     dashboard_resultados,
     dashboard_conversas_por_dia,
     dashboard_capi_resumo,
+    kanban_leads,
 )
 import capi
 
@@ -653,6 +654,24 @@ PAINEL_HTML = """
   .res-capi-nome { flex: 1; font-weight: 600; color: var(--carvao); }
   .res-capi-badge { font-size: 12px; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
 
+  /* ===== KANBAN ===== */
+  .kb-cols { display: flex; gap: 14px; align-items: flex-start; min-height: 100%; }
+  .kb-col { flex: 1; min-width: 240px; background: var(--cinza-bg); border-radius: 12px; padding: 12px; }
+  .kb-col-topo { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; padding: 0 4px; }
+  .kb-col-nome { font-size: 13px; font-weight: 700; color: var(--carvao); display: flex; align-items: center; gap: 7px; }
+  .kb-col-cont { font-size: 12px; font-weight: 700; color: var(--cinza-texto); background: #fff; border-radius: 10px; padding: 1px 9px; }
+  .kb-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .kb-card { background: #fff; border: 1px solid var(--cinza-borda); border-radius: 10px; padding: 11px 12px; margin-bottom: 9px; cursor: pointer; transition: box-shadow .12s, transform .05s; }
+  .kb-card:hover { box-shadow: 0 2px 8px rgba(45,46,60,.1); }
+  .kb-card:active { transform: scale(.99); }
+  .kb-card-nome { font-size: 13px; font-weight: 600; color: var(--carvao); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kb-card-sub { font-size: 11px; color: var(--cinza-texto); margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .kb-badge { font-size: 10px; padding: 1px 6px; border-radius: 5px; font-weight: 600; }
+  .kb-badge-anuncio { background: var(--verde-claro); color: var(--verde-escuro); }
+  .kb-badge-direto { background: var(--cinza-divisor); color: var(--cinza-texto); }
+  .kb-valor { font-size: 12px; font-weight: 700; color: var(--verde-escuro); margin-top: 4px; }
+  .kb-vazio { font-size: 12px; color: var(--cinza-fraco); text-align: center; padding: 16px 0; }
+
   /* ============================================================ */
   /* AGENDA (view semanal tipo Google Calendar)                    */
   /* ============================================================ */
@@ -1049,6 +1068,8 @@ PAINEL_HTML = """
     <nav class="header-abas">
       <button type="button" class="aba-principal aba-ativa" data-view="resultados"
               onclick="trocarView('resultados')">Dashboard</button>
+      <button type="button" class="aba-principal" data-view="kanban"
+              onclick="trocarView('kanban')">Kanban</button>
       <button type="button" class="aba-principal" data-view="conversas"
               onclick="trocarView('conversas')">Conversas</button>
       <button type="button" class="aba-principal" data-view="agenda"
@@ -1232,6 +1253,38 @@ PAINEL_HTML = """
         <div style="padding:40px; text-align:center; color:var(--cinza-fraco);">
           {% if eh_admin %}Selecione um cliente pra ver os resultados.{% else %}Carregando...{% endif %}
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== VIEW: KANBAN =========================== -->
+  <div class="main view-kanban" id="view-kanban" style="display:none; flex-direction:column; overflow:hidden;">
+    <div style="padding:16px 24px; border-bottom:1px solid var(--cinza-borda); display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+      <div>
+        <div style="font-size:18px; font-weight:700; color:var(--carvao);">Pipeline de leads</div>
+        <div style="font-size:12px; color:var(--cinza-texto);">Etapas preenchidas automaticamente pela Ana — sem arrastar card.</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        {% if eh_admin %}
+        <select id="kanban-cliente" onchange="carregarKanban()"
+                style="padding:8px 10px; border:1.5px solid var(--cinza-borda); border-radius:8px;
+                       font-family:inherit; font-size:14px; font-weight:600; color:var(--carvao);
+                       background:#fff; cursor:pointer; min-width:180px;">
+          <option value="">Selecione um cliente</option>
+        </select>
+        {% endif %}
+        <select id="kanban-dias" onchange="carregarKanban()"
+                style="padding:8px 10px; border:1.5px solid var(--cinza-borda); border-radius:8px;
+                       font-family:inherit; font-size:13px; font-weight:600; color:var(--carvao); background:#fff; cursor:pointer;">
+          <option value="7">7 dias</option>
+          <option value="30" selected>30 dias</option>
+          <option value="90">90 dias</option>
+        </select>
+      </div>
+    </div>
+    <div id="kanban-board" style="flex:1; overflow:auto; padding:20px;">
+      <div style="padding:40px; text-align:center; color:var(--cinza-fraco);">
+        {% if eh_admin %}Selecione um cliente pra ver o pipeline.{% else %}Carregando...{% endif %}
       </div>
     </div>
   </div>
@@ -1570,6 +1623,8 @@ function trocarView(nome) {
     (nome === 'agenda') ? '' : 'none';
   document.getElementById('view-resultados').style.display =
     (nome === 'resultados') ? '' : 'none';
+  document.getElementById('view-kanban').style.display =
+    (nome === 'kanban') ? '' : 'none';
 
   // Limpa classes de estado da outra view pra não contaminar o layout mobile
   if (nome === 'agenda') {
@@ -1581,6 +1636,108 @@ function trocarView(nome) {
     document.body.classList.remove('conversa-aberta');
     inicializarResultadosSePreciso();
   }
+  if (nome === 'kanban') {
+    document.body.classList.remove('conversa-aberta');
+    inicializarKanbanSePreciso();
+  }
+}
+
+// ============================================================
+// KANBAN (pipeline com etapa automática)
+// ============================================================
+let kanbanClinicaId = null;
+let kanbanInicializado = false;
+const KB_ETAPAS = [
+  { id: 'novo',        nome: 'Novo',           cor: '#9CA3AF' },
+  { id: 'atendimento', nome: 'Em atendimento', cor: '#F59E0B' },
+  { id: 'agendado',    nome: 'Agendado',       cor: '#3B82F6' },
+  { id: 'comprou',     nome: 'Comprou',        cor: '#1FBE82' },
+];
+
+function inicializarKanbanSePreciso() {
+  if (kanbanInicializado) return;
+  kanbanInicializado = true;
+  const sel = document.getElementById('kanban-cliente');
+  if (sel) {
+    fetch('/painel/admin/usuarios').then(r => r.ok ? r.json() : []).then(cs => {
+      sel.innerHTML = '<option value="">Selecione um cliente</option>' +
+        cs.map(c => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
+    }).catch(() => {});
+  } else {
+    kanbanClinicaId = 'meu';
+    carregarKanban();
+  }
+}
+
+async function carregarKanban() {
+  const sel = document.getElementById('kanban-cliente');
+  if (sel) kanbanClinicaId = sel.value ? parseInt(sel.value, 10) : null;
+  const board = document.getElementById('kanban-board');
+  if (!kanbanClinicaId) {
+    board.innerHTML = '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Selecione um cliente pra ver o pipeline.</div>';
+    return;
+  }
+  const dias = document.getElementById('kanban-dias').value || 30;
+  const params = new URLSearchParams({ dias });
+  if (kanbanClinicaId !== 'meu') params.set('clinica_id', kanbanClinicaId);
+  board.innerHTML = '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Carregando...</div>';
+  const r = await fetch('/painel/api/kanban?' + params);
+  if (!r.ok) { board.innerHTML = '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Erro ao carregar.</div>'; return; }
+  const d = await r.json();
+  renderKanban(d.leads || []);
+}
+
+function kbFmtData(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
+}
+
+function renderKanban(leads) {
+  const board = document.getElementById('kanban-board');
+  const porEtapa = {};
+  KB_ETAPAS.forEach(e => porEtapa[e.id] = []);
+  leads.forEach(l => { (porEtapa[l.etapa] || porEtapa['novo']).push(l); });
+
+  const cols = KB_ETAPAS.map(e => {
+    const lista = porEtapa[e.id];
+    const totalValor = e.id === 'comprou'
+      ? lista.reduce((s, l) => s + (l.venda_valor || 0), 0) : 0;
+    const cards = lista.length ? lista.map(l => {
+      const nome = l.nome ? escapar(l.nome) : formatarNumero(l.numero);
+      const badgeCls = l.origem === 'anúncio' ? 'kb-badge-anuncio' : 'kb-badge-direto';
+      let extra = '';
+      if (l.etapa === 'comprou' && l.venda_valor != null) {
+        extra = `<div class="kb-valor">${fmtBRL(l.venda_valor)}</div>`;
+      } else if (l.etapa === 'agendado' && l.agend_data) {
+        extra = `<div class="kb-card-sub">📅 ${kbFmtData(l.agend_data)}</div>`;
+      }
+      return `<div class="kb-card" onclick="abrirConversaDoKanban(${l.conversa_id})">
+        <div class="kb-card-nome">${nome}</div>
+        <div class="kb-card-sub">
+          <span class="kb-badge ${badgeCls}">${l.origem}</span>
+          ${l.ultima_msg ? kbFmtData(l.ultima_msg) : ''}
+        </div>
+        ${extra}
+      </div>`;
+    }).join('') : '<div class="kb-vazio">nenhum lead</div>';
+    const valorTopo = totalValor > 0
+      ? `<div class="kb-valor" style="margin:0 0 8px 4px;">${fmtBRL(totalValor)}</div>` : '';
+    return `<div class="kb-col">
+      <div class="kb-col-topo">
+        <div class="kb-col-nome"><span class="kb-dot" style="background:${e.cor}"></span>${e.nome}</div>
+        <div class="kb-col-cont">${lista.length}</div>
+      </div>
+      ${valorTopo}
+      ${cards}
+    </div>`;
+  }).join('');
+  board.innerHTML = '<div class="kb-cols">' + cols + '</div>';
+}
+
+function abrirConversaDoKanban(conversaId) {
+  trocarView('conversas');
+  abrirConversa(conversaId);
 }
 
 // ============================================================
@@ -3618,6 +3775,24 @@ def registrar_rotas(app):
         res["por_dia"] = dashboard_conversas_por_dia(clinica_id, ini, fim)
         res["capi"] = dashboard_capi_resumo(clinica_id, ini, fim)
         return jsonify(res)
+
+    @app.route("/painel/api/kanban", methods=["GET"])
+    @login_required
+    def api_kanban():
+        """Leads no pipeline (etapa derivada). Cliente comum: sua clínica; admin: ?clinica_id."""
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None:
+            clinica_id = clinica_sessao
+        else:
+            cid = request.args.get("clinica_id")
+            if not cid or not str(cid).isdigit():
+                return jsonify({"erro": "clinica_id obrigatório pra admin"}), 400
+            clinica_id = int(cid)
+        try:
+            dias = min(max(int(request.args.get("dias") or 30), 1), 180)
+        except (TypeError, ValueError):
+            dias = 30
+        return jsonify({"leads": kanban_leads(clinica_id, dias)})
 
     @app.route("/painel/api/conversas", methods=["GET"])
     @login_required

@@ -817,6 +817,69 @@ def dashboard_resultados(clinica_id, data_inicio, data_fim):
     }
 
 
+def kanban_leads(clinica_id, dias=30, limite=300):
+    """
+    Leads do período pro Kanban, com a etapa DERIVADA automaticamente do que a
+    Ana já fez (dados de primeira mão): comprou > agendou > em atendimento > novo.
+    Cada lead traz nome (do agendamento, se houver), número, origem (anúncio/direto),
+    data e valor da venda. É o diferencial: pipeline sem ninguém arrastar card.
+    """
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """
+        SELECT c.id AS conversa_id, c.numero_lead, c.criada_em, c.ctwa_clid,
+               COUNT(m.id) AS n_msgs,
+               MAX(m.criada_em) AS ultima_msg,
+               ag.nome_lead, ag.data_hora AS agend_data,
+               ve.valor AS venda_valor
+        FROM conversas c
+        LEFT JOIN mensagens m ON m.conversa_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT nome_lead, data_hora FROM agendamentos
+            WHERE conversa_id = c.id AND status = 'confirmado'
+            ORDER BY data_hora DESC LIMIT 1
+        ) ag ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT SUM(valor) AS valor FROM vendas WHERE conversa_id = c.id
+        ) ve ON TRUE
+        WHERE c.clinica_id = %s
+          AND c.criada_em >= NOW() - (%s || ' days')::interval
+        GROUP BY c.id, c.numero_lead, c.criada_em, c.ctwa_clid,
+                 ag.nome_lead, ag.data_hora, ve.valor
+        ORDER BY COALESCE(MAX(m.criada_em), c.criada_em) DESC
+        LIMIT %s
+        """,
+        (clinica_id, str(int(dias)), limite)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    leads = []
+    for r in rows:
+        if r["venda_valor"] is not None:
+            etapa = "comprou"
+        elif r["agend_data"] is not None:
+            etapa = "agendado"
+        elif (r["n_msgs"] or 0) >= 4:
+            etapa = "atendimento"
+        else:
+            etapa = "novo"
+        leads.append({
+            "conversa_id": r["conversa_id"],
+            "numero": r["numero_lead"],
+            "nome": r["nome_lead"],
+            "origem": "anúncio" if r["ctwa_clid"] else "direto",
+            "etapa": etapa,
+            "n_msgs": r["n_msgs"] or 0,
+            "ultima_msg": r["ultima_msg"].isoformat() if r["ultima_msg"] else None,
+            "agend_data": r["agend_data"].isoformat() if r["agend_data"] else None,
+            "venda_valor": float(r["venda_valor"]) if r["venda_valor"] is not None else None,
+        })
+    return leads
+
+
 def dashboard_conversas_por_dia(clinica_id, data_inicio, data_fim):
     """Conversas iniciadas por dia (fuso Brasília) no período — pro gráfico."""
     conn = _conectar()
