@@ -677,9 +677,10 @@ USE estas ferramentas:
 - listar_bloqueios: consulta bloqueios ativos num período
 - remover_bloqueio: remove um bloqueio existente
 - verificar_disponibilidade: também disponível, se o dono quiser ver horários livres
-- registrar_venda: registra um fecho de negócio com um lead (precisa do número do lead;
-  o valor é opcional mas importante). Quando o dono disser que fechou/vendeu, use isso.
-  Se ele não informar o número do lead ou o valor, pergunte de forma curta antes de registrar.
+- registrar_venda: registra um fecho de negócio. O número do lead é OPCIONAL — peça
+  se o cliente falou com você (permite atribuir ao anúncio), mas se a venda veio por
+  fora (orgânico, o cliente falou direto com o dono), registre mesmo sem número. O
+  valor é importante: pergunte de forma curta se o dono não disser.
 """
 
 
@@ -813,29 +814,31 @@ FERRAMENTAS_DONO = [
     {
         "name": "registrar_venda",
         "description": (
-            "Registra uma venda/fecho de negócio com um lead e dispara a conversão "
-            "pra Meta (Purchase). Use quando o dono avisar que FECHOU com um cliente "
-            "(ex: 'fechei com o fulano', 'o lead 11 99999-8888 fechou 3 mil'). "
-            "Precisa do número de WhatsApp do lead. Se o dono não disse o número, "
-            "peça. O valor é opcional mas importante — pergunte se ele não disse."
+            "Registra uma venda/fecho de negócio. Use quando o dono avisar que FECHOU "
+            "com um cliente (ex: 'fechei com o fulano', 'vendi 3 mil'). O número de "
+            "WhatsApp do lead é OPCIONAL: se o cliente falou com você em algum momento, "
+            "peça o número (permite atribuir a venda ao anúncio na Meta); se a venda "
+            "veio por fora (orgânico, o cliente falou direto com o dono), registre "
+            "mesmo sem número — a venda conta no faturamento do mesmo jeito. O valor é "
+            "importante — pergunte se o dono não disse."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "numero_lead": {
                     "type": "string",
-                    "description": "Número de WhatsApp do lead que fechou (com DDD). Ex: 11999998888"
+                    "description": "Número de WhatsApp do lead (com DDD), SE ele falou com você. Ex: 11999998888. Deixe vazio se a venda veio por fora."
                 },
                 "valor": {
                     "type": "number",
-                    "description": "Valor da venda em reais (ex: 3000). Opcional, mas recomendado."
+                    "description": "Valor da venda em reais (ex: 3000). Importante, pergunte se não foi dito."
                 },
                 "descricao": {
                     "type": "string",
-                    "description": "Descrição curta do que foi vendido (opcional)."
+                    "description": "Descrição curta do que foi vendido / de quem é (opcional, útil em venda avulsa)."
                 }
             },
-            "required": ["numero_lead"]
+            "required": []
         }
     }
 ]
@@ -1142,16 +1145,12 @@ def _executar_ferramenta_dono(nome, args, clinica):
         return f"Bloqueio #{bid} não encontrado.", extra
 
     elif nome == "registrar_venda":
+        # Número é OPCIONAL: se o cliente falou com a agente em algum momento,
+        # o número vincula a venda à conversa e permite atribuir ao anúncio.
+        # Venda que veio por fora (orgânico, cliente falou direto com o dono) é
+        # registrada mesmo assim, como avulsa — conta no faturamento, sem atribuição.
         numero = (args.get("numero_lead") or "").strip()
-        if not numero:
-            return "Erro: preciso do número do lead pra registrar a venda.", extra
-
-        conversa = buscar_conversa_por_numero(clinica["id"], numero)
-        if not conversa:
-            return (
-                f"Não encontrei nenhuma conversa com o número {numero} nesta clínica. "
-                f"Confere o número pra mim?"
-            ), extra
+        conversa = buscar_conversa_por_numero(clinica["id"], numero) if numero else None
 
         valor = args.get("valor")
         try:
@@ -1159,18 +1158,23 @@ def _executar_ferramenta_dono(nome, args, clinica):
         except (ValueError, TypeError):
             valor = None
         descricao = (args.get("descricao") or "").strip() or None
+        # Se o dono passou um número mas não achamos conversa, guarda no histórico.
+        if numero and not conversa and not descricao:
+            descricao = f"Venda avulsa (contato informado: {numero})"
 
         try:
             venda_id = registrar_venda(
-                clinica["id"], conversa["id"], valor=valor, descricao=descricao
+                clinica["id"],
+                conversa["id"] if conversa else None,
+                valor=valor, descricao=descricao
             )
         except Exception as e:
             return f"Erro ao registrar a venda: {e}", extra
 
         extra["venda_registrada_id"] = venda_id
 
-        # Dispara Purchase pra Meta (se CAPI ativo e o lead veio de anúncio).
-        if clinica.get("capi_ativo"):
+        # Purchase pra Meta só quando há conversa vinculada com atribuição (ctwa_clid).
+        if conversa and clinica.get("capi_ativo"):
             custom = {"value": valor, "currency": "BRL"} if valor is not None else None
             capi.enviar_evento(
                 clinica, conversa, "Purchase", f"purchase:{venda_id}",
@@ -1180,9 +1184,13 @@ def _executar_ferramenta_dono(nome, args, clinica):
         valor_txt = ""
         if valor is not None:
             valor_txt = f" no valor de R$ {valor:.2f}".replace(".", ",")
+        if conversa:
+            destino = f"pro contato {numero}"
+        else:
+            destino = "(venda avulsa, sem vínculo com conversa)"
         return (
-            f"Venda registrada{valor_txt} pro contato {numero} (ID {venda_id}). "
-            f"Confirme isso ao dono de forma curta e direta."
+            f"Venda registrada{valor_txt} {destino} (ID {venda_id}). "
+            f"Confirme ao dono de forma curta e direta."
         ), extra
 
     elif nome == "verificar_disponibilidade":

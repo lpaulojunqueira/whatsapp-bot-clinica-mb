@@ -306,17 +306,21 @@ def inicializar_banco():
     """)
 
     # Vendas registradas manualmente (fecho de contrato/compra). Dispara Purchase.
+    # conversa_id é opcional: venda avulsa (cliente que veio por fora, sem conversa
+    # no sistema) também conta no faturamento, só não tem atribuição de anúncio.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS vendas (
             id SERIAL PRIMARY KEY,
             clinica_id INT NOT NULL REFERENCES clinicas(id),
-            conversa_id INT NOT NULL REFERENCES conversas(id),
+            conversa_id INT REFERENCES conversas(id),
             valor NUMERIC(12,2),
             moeda TEXT DEFAULT 'BRL',
             descricao TEXT,
             registrada_em TIMESTAMPTZ DEFAULT NOW()
         );
     """)
+    # Bancos que já criaram a tabela com NOT NULL: libera a venda avulsa.
+    cur.execute("ALTER TABLE vendas ALTER COLUMN conversa_id DROP NOT NULL;")
 
     conn.commit()
     cur.close()
