@@ -639,6 +639,18 @@ PAINEL_HTML = """
   }
   .res-card .valor { font-size: 28px; font-weight: 700; color: var(--carvao); line-height: 1; }
   .res-card .sub { font-size: 12px; color: var(--cinza-texto); margin-top: 6px; }
+  .res-taxas {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px; margin: -8px 0 24px;
+  }
+  .res-taxa {
+    background: var(--cinza-fundo, #F8F9FB); border: 1px solid var(--cinza-borda);
+    border-radius: 10px; padding: 12px 14px;
+  }
+  .res-taxa .val { font-size: 20px; font-weight: 700; color: var(--carvao); line-height: 1; }
+  .res-taxa .rot { font-size: 11px; color: var(--cinza-texto); margin-top: 5px; line-height: 1.3; }
+  .res-taxa-off { opacity: .55; }
+  .res-taxa-off .val { color: var(--cinza-fraco); }
   .res-funil-linha {
     display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
   }
@@ -1815,6 +1827,16 @@ function renderResultados(d) {
         <div class="sub">${d.conversas_anuncio} de anúncio · ${d.conversas_direto} diretas</div>
       </div>
       <div class="res-card">
+        <div class="rotulo">Novos leads</div>
+        <div class="valor">${d.novos || 0}</div>
+        <div class="sub">entraram, sem interesse claro ainda</div>
+      </div>
+      <div class="res-card">
+        <div class="rotulo">Leads qualificados</div>
+        <div class="valor">${d.qualificados || 0}</div>
+        <div class="sub">engajaram na conversa com a Ana</div>
+      </div>
+      <div class="res-card">
         <div class="rotulo">Agendamentos</div>
         <div class="valor">${d.agendamentos}</div>
         <div class="sub">${d.agend_conversa_pct}% das conversas</div>
@@ -1827,7 +1849,26 @@ function renderResultados(d) {
       <div class="res-card">
         <div class="rotulo">Faturamento</div>
         <div class="valor" style="color:var(--verde-escuro)">${fmtBRL(d.faturamento)}</div>
-        <div class="sub">Lead → venda: ${d.lead_venda_pct}%</div>
+        <div class="sub">receita das vendas no período</div>
+      </div>
+    </div>
+
+    <div class="res-taxas">
+      <div class="res-taxa">
+        <div class="val">${d.qualif_pct || 0}%</div>
+        <div class="rot">Qualificação<br>dos contatos que chegaram</div>
+      </div>
+      <div class="res-taxa">
+        <div class="val">${d.agend_conversa_pct}%</div>
+        <div class="rot">Agendamento<br>das conversas viram consulta</div>
+      </div>
+      <div class="res-taxa">
+        <div class="val">${d.lead_venda_pct}%</div>
+        <div class="rot">Conversão em venda<br>dos contatos fecham</div>
+      </div>
+      <div class="res-taxa res-taxa-off">
+        <div class="val">—</div>
+        <div class="rot">ROAS<br>em breve (com Meta Ads)</div>
       </div>
     </div>
 
@@ -1837,6 +1878,11 @@ function renderResultados(d) {
         <div class="res-funil-rot">Conversas</div>
         <div class="res-funil-barra-bg"><div class="res-funil-barra" style="width:${barra(conv)}%"></div></div>
         <div class="res-funil-num">${conv}</div>
+      </div>
+      <div class="res-funil-linha">
+        <div class="res-funil-rot">Qualificaram</div>
+        <div class="res-funil-barra-bg"><div class="res-funil-barra" style="width:${barra(d.qualificados || 0)}%; background:#F59E0B;"></div></div>
+        <div class="res-funil-num">${d.qualificados || 0}</div>
       </div>
       <div class="res-funil-linha">
         <div class="res-funil-rot">Agendaram</div>

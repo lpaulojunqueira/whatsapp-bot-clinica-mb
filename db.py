@@ -800,18 +800,45 @@ def dashboard_resultados(clinica_id, data_inicio, data_fim):
     )
     v = cur.fetchone()
 
+    # Etapa do lead (mesma lógica do Kanban): "novo" = entrou mas não engajou
+    # (poucas mensagens, sem agendamento nem venda). Todo o resto = qualificado
+    # (engajou de verdade, agendou ou comprou). É complementar: novos + qualif = total.
+    cur.execute(
+        """
+        WITH base AS (
+          SELECT c.id,
+            (SELECT COUNT(*) FROM mensagens m WHERE m.conversa_id = c.id) AS n_msgs,
+            EXISTS (SELECT 1 FROM agendamentos a
+                    WHERE a.conversa_id = c.id AND a.status = 'confirmado') AS tem_agend,
+            EXISTS (SELECT 1 FROM vendas ve WHERE ve.conversa_id = c.id) AS tem_venda
+          FROM conversas c
+          WHERE c.clinica_id = %s AND c.criada_em >= %s AND c.criada_em < %s
+        )
+        SELECT COUNT(*) FILTER (
+                 WHERE n_msgs < 4 AND NOT tem_agend AND NOT tem_venda
+               ) AS novos
+        FROM base
+        """,
+        (clinica_id, data_inicio, data_fim)
+    )
+    novos = cur.fetchone()["novos"] or 0
+
     cur.close()
     conn.close()
 
     total = conv["total"] or 0
     vendas_n = v["n"] or 0
+    qualificados = max(total - novos, 0)
     return {
         "conversas": total,
         "conversas_anuncio": conv["de_anuncio"] or 0,
         "conversas_direto": conv["diretas"] or 0,
+        "novos": novos,
+        "qualificados": qualificados,
         "agendamentos": agendamentos or 0,
         "vendas": vendas_n,
         "faturamento": float(v["total"] or 0),
+        "qualif_pct": round(100.0 * qualificados / total, 1) if total else 0.0,
         "lead_venda_pct": round(100.0 * vendas_n / total, 1) if total else 0.0,
         "agend_conversa_pct": round(100.0 * (agendamentos or 0) / total, 1) if total else 0.0,
     }
