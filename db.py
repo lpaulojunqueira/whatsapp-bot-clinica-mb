@@ -959,6 +959,42 @@ DEMO_PHONE_ID = "DEMO_ESTETICA_AURORA"
 DEMO_NOME = "Estética Aurora (Demo)"
 
 
+def importar_agendamentos(clinica_id, itens):
+    """
+    Cria agendamentos em lote a partir da importação de planilha. `itens` é uma
+    lista de dicts {numero_lead, nome_lead, data_hora(datetime), observacao}.
+    Pula duplicado exato (mesmo número + mesma data_hora já confirmado), pra
+    reimportar o mesmo arquivo não duplicar. Devolve {criados, duplicados}.
+    """
+    conn = _conectar()
+    cur = conn.cursor()
+    criados = 0
+    duplicados = 0
+    for it in itens:
+        cur.execute(
+            """SELECT 1 FROM agendamentos
+               WHERE clinica_id = %s AND numero_lead = %s AND data_hora = %s
+                 AND status = 'confirmado' LIMIT 1""",
+            (clinica_id, it["numero_lead"], it["data_hora"])
+        )
+        if cur.fetchone():
+            duplicados += 1
+            continue
+        cur.execute(
+            """INSERT INTO agendamentos
+                 (clinica_id, numero_lead, nome_lead, data_hora, duracao_minutos,
+                  status, origem, observacao)
+               VALUES (%s, %s, %s, %s, %s, 'confirmado', 'importado', %s)""",
+            (clinica_id, it["numero_lead"], it.get("nome_lead") or None,
+             it["data_hora"], it.get("duracao") or 60, it.get("observacao") or None)
+        )
+        criados += 1
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"criados": criados, "duplicados": duplicados}
+
+
 def obter_clinica_demo():
     """Retorna o id da clínica demo, criando-a se não existir. Ela nunca recebe
     webhook real (phone_number_id fake) e fica com CAPI/follow-up desligados."""

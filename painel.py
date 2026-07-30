@@ -61,8 +61,10 @@ from db import (
     kanban_leads,
     semear_demo,
     limpar_demo,
+    importar_agendamentos,
 )
 import capi
+import importacao
 
 
 # ============================================================
@@ -1201,6 +1203,12 @@ PAINEL_HTML = """
         </button>
       </div>
 
+      <div style="padding:12px 20px; border-top:1px solid var(--cinza-borda);">
+        <button type="button" class="btn btn-pequeno" style="width:100%;" onclick="abrirImportar()">
+          ↑ Importar agenda (CSV/Excel)
+        </button>
+      </div>
+
       <div id="agenda-filtro-prof-wrap" style="display:none; padding:12px 20px; border-bottom:1px solid var(--cinza-borda);">
         <div class="label" style="font-size:11px; font-weight:600; color:var(--cinza-fraco); text-transform:uppercase; letter-spacing:0.6px; margin-bottom:6px;">Profissional</div>
         <select id="agenda-filtro-prof" onchange="renderizarAgenda()"
@@ -1350,6 +1358,33 @@ PAINEL_HTML = """
       <div class="agenda-modal-rodape">
         <button type="button" class="btn btn-pequeno" onclick="fecharModalVenda()">Cancelar</button>
         <button type="button" class="btn btn-verde" onclick="salvarVenda()">Registrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de importar agenda -->
+  <div id="importar-modal" class="agenda-modal" style="display:none">
+    <div class="agenda-modal-conteudo" style="max-width:640px;">
+      <div class="agenda-modal-topo">
+        <div class="agenda-modal-titulo">Importar agenda</div>
+        <button type="button" class="agenda-modal-fechar" onclick="fecharImportar()"
+                aria-label="Fechar">×</button>
+      </div>
+      <div class="agenda-modal-body">
+        <div style="font-size:13px; color:var(--cinza-texto); line-height:1.6; margin-bottom:14px;">
+          Suba uma planilha <strong>CSV ou Excel</strong> com os pacientes já agendados.
+          Colunas: <strong>nome, telefone, data, hora</strong> e <em>observação</em> (opcional).
+          Data em DD/MM/AAAA, hora em HH:MM. Assim a Ana manda a confirmação no dia da consulta.
+          <a href="#" onclick="baixarModeloImport(); return false;" style="color:var(--verde-escuro); font-weight:600;">Baixar planilha modelo</a>.
+        </div>
+        <input type="file" id="import-arquivo" accept=".csv,.xlsx,.xlsm"
+               onchange="previewImport()" class="res-data" style="width:100%; cursor:pointer;">
+        <div id="import-resultado" style="margin-top:16px;"></div>
+      </div>
+      <div class="agenda-modal-rodape">
+        <button type="button" class="btn btn-pequeno" onclick="fecharImportar()">Cancelar</button>
+        <button type="button" class="btn btn-verde" id="import-btn-confirmar"
+                onclick="confirmarImport()" style="display:none;">Importar</button>
       </div>
     </div>
   </div>
@@ -1604,6 +1639,109 @@ async function salvarVenda() {
     const d = await r.json().catch(() => ({}));
     alert('Erro: ' + (d.erro || 'falha ao registrar'));
   }
+}
+
+// ============================================================
+// IMPORTAR AGENDA (CSV / Excel)
+// ============================================================
+let importValidos = [];
+
+function abrirImportar() {
+  const ehAdmin = !!document.getElementById('agenda-cliente');
+  if (ehAdmin && (!agendaClinicaId || agendaClinicaId === 'meu')) {
+    alert('Selecione um cliente na agenda antes de importar.');
+    return;
+  }
+  importValidos = [];
+  document.getElementById('import-arquivo').value = '';
+  document.getElementById('import-resultado').innerHTML = '';
+  document.getElementById('import-btn-confirmar').style.display = 'none';
+  document.getElementById('importar-modal').style.display = 'flex';
+}
+
+function fecharImportar() {
+  document.getElementById('importar-modal').style.display = 'none';
+}
+
+function baixarModeloImport() {
+  const csv = 'nome;telefone;data;hora;observacao\n'
+    + 'Maria Silva;(19) 99999-1234;05/08/2026;14:30;Retorno\n'
+    + 'João Souza;19 98888-0000;06/08/2026;09:00;Avaliação\n';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'modelo-agenda.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function previewImport() {
+  const inp = document.getElementById('import-arquivo');
+  const alvo = document.getElementById('import-resultado');
+  const btn = document.getElementById('import-btn-confirmar');
+  btn.style.display = 'none';
+  importValidos = [];
+  if (!inp.files || !inp.files[0]) { alvo.innerHTML = ''; return; }
+  alvo.innerHTML = '<div style="color:var(--cinza-fraco); font-size:13px;">Lendo arquivo...</div>';
+  const fd = new FormData();
+  fd.append('arquivo', inp.files[0]);
+  const r = await fetch('/painel/api/agenda/importar/preview', { method: 'POST', body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alvo.innerHTML = '<div class="alerta alerta-erro">' + escapar(d.erro || 'erro ao ler') + '</div>'; return; }
+  importValidos = d.validos || [];
+
+  const errosHtml = (d.erros || []).length
+    ? '<div style="margin-top:10px; font-size:12px; color:var(--vermelho);">'
+      + (d.erros.length) + ' linha(s) com problema:<ul style="margin:6px 0 0 18px;">'
+      + d.erros.slice(0, 8).map(e => '<li>linha ' + e.linha + ': ' + escapar(e.motivo) + '</li>').join('')
+      + (d.erros.length > 8 ? '<li>...</li>' : '') + '</ul></div>'
+    : '';
+
+  if (!importValidos.length) {
+    alvo.innerHTML = '<div class="alerta alerta-erro">Nenhum agendamento válido no arquivo.</div>' + errosHtml;
+    return;
+  }
+  const linhas = importValidos.slice(0, 10).map(v => `
+    <tr>
+      <td style="padding:4px 8px;">${escapar(v.nome || '—')}</td>
+      <td style="padding:4px 8px;">${escapar(formatarNumero(v.telefone))}</td>
+      <td style="padding:4px 8px;">${escapar(v.data.split('-').reverse().join('/'))}</td>
+      <td style="padding:4px 8px;">${escapar(v.hora)}</td>
+    </tr>`).join('');
+  alvo.innerHTML = `
+    <div class="alerta alerta-sucesso"><strong>${importValidos.length}</strong> agendamento(s) prontos pra importar.</div>
+    <div style="max-height:220px; overflow:auto; border:1px solid var(--cinza-borda); border-radius:8px; margin-top:10px;">
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead><tr style="background:var(--cinza-divisor); text-align:left;">
+          <th style="padding:6px 8px;">Nome</th><th style="padding:6px 8px;">Telefone</th>
+          <th style="padding:6px 8px;">Data</th><th style="padding:6px 8px;">Hora</th>
+        </tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+      ${importValidos.length > 10 ? '<div style="padding:6px 8px; font-size:11px; color:var(--cinza-texto);">+ ' + (importValidos.length - 10) + ' outros</div>' : ''}
+    </div>
+    ${errosHtml}`;
+  btn.style.display = '';
+}
+
+async function confirmarImport() {
+  if (!importValidos.length) return;
+  const btn = document.getElementById('import-btn-confirmar');
+  btn.disabled = true; btn.textContent = 'Importando...';
+  const body = { itens: importValidos };
+  if (agendaClinicaId && agendaClinicaId !== 'meu') body.clinica_id = agendaClinicaId;
+  const r = await fetch('/painel/api/agenda/importar/confirmar', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const d = await r.json().catch(() => ({}));
+  btn.disabled = false; btn.textContent = 'Importar';
+  if (!r.ok) { alert('Erro: ' + (d.erro || 'falha')); return; }
+  let msg = d.criados + ' agendamento(s) importado(s).';
+  if (d.duplicados) msg += ' ' + d.duplicados + ' já existia(m).';
+  if (d.ignorados) msg += ' ' + d.ignorados + ' ignorado(s).';
+  alert(msg);
+  fecharImportar();
+  if (typeof carregarAgenda === 'function') carregarAgenda();
 }
 
 async function enviarMsg(e) {
@@ -3916,6 +4054,66 @@ def registrar_rotas(app):
         except (TypeError, ValueError):
             dias = 30
         return jsonify({"leads": kanban_leads(clinica_id, dias)})
+
+    @app.route("/painel/api/agenda/importar/preview", methods=["POST"])
+    @login_required
+    def api_importar_preview():
+        """Lê o CSV/Excel e devolve o que seria importado, sem gravar nada."""
+        f = request.files.get("arquivo")
+        if not f or not f.filename:
+            return jsonify({"erro": "nenhum arquivo enviado"}), 400
+        conteudo = f.read()
+        if len(conteudo) > 5 * 1024 * 1024:
+            return jsonify({"erro": "arquivo muito grande (máx 5MB)"}), 400
+        validos, erros = importacao.parse_planilha(f.filename, conteudo)
+        return jsonify({"validos": validos, "erros": erros,
+                        "total_validos": len(validos), "total_erros": len(erros)})
+
+    @app.route("/painel/api/agenda/importar/confirmar", methods=["POST"])
+    @login_required
+    def api_importar_confirmar():
+        """Grava os agendamentos já validados no preview."""
+        from datetime import datetime, timezone, timedelta
+        body = request.get_json() or {}
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None:
+            clinica_id = clinica_sessao
+        else:
+            cid = body.get("clinica_id")
+            if not cid or not str(cid).isdigit():
+                return jsonify({"erro": "clinica_id obrigatório pra admin"}), 400
+            clinica_id = int(cid)
+        itens_in = body.get("itens") or []
+        if not isinstance(itens_in, list) or not itens_in:
+            return jsonify({"erro": "nada pra importar"}), 400
+        if len(itens_in) > 2000:
+            return jsonify({"erro": "limite de 2000 agendamentos por importação"}), 400
+        tz = timezone(timedelta(hours=-3))
+        itens = []
+        ignorados = 0
+        for it in itens_in:
+            tel = importacao.normalizar_telefone(it.get("telefone"))
+            data = it.get("data")
+            hora = it.get("hora")
+            if not (tel and data and hora):
+                ignorados += 1
+                continue
+            try:
+                dt = datetime.strptime(f"{data} {hora}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except ValueError:
+                ignorados += 1
+                continue
+            itens.append({
+                "numero_lead": tel,
+                "nome_lead": (it.get("nome") or "").strip() or None,
+                "data_hora": dt,
+                "observacao": (it.get("observacao") or "").strip() or None,
+            })
+        if not itens:
+            return jsonify({"erro": "nenhum item válido pra importar"}), 400
+        res = importar_agendamentos(clinica_id, itens)
+        res["ignorados"] = ignorados
+        return jsonify(res)
 
     @app.route("/painel/api/conversas", methods=["GET"])
     @login_required
