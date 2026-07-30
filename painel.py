@@ -625,6 +625,12 @@ PAINEL_HTML = """
   }
   .res-periodo:hover { border-color: var(--verde); }
   .res-periodo.aba-ativa { background: var(--verde); color: #fff; border-color: var(--verde); }
+  .res-data {
+    border: 1.5px solid var(--cinza-borda); color: var(--carvao); background: #fff;
+    padding: 7px 10px; border-radius: 8px; font-family: inherit; font-size: 13px;
+    font-weight: 600; cursor: pointer;
+  }
+  .res-data:focus { outline: none; border-color: var(--verde); }
   .res-cards {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 14px; margin-bottom: 24px;
@@ -1257,10 +1263,15 @@ PAINEL_HTML = """
         {% endif %}
       </div>
 
-      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:20px;">
+      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:20px;">
+        <button type="button" class="res-periodo" data-dias="1" onclick="resPeriodo(1)">Hoje</button>
         <button type="button" class="res-periodo aba-ativa" data-dias="7" onclick="resPeriodo(7)">7 dias</button>
         <button type="button" class="res-periodo" data-dias="30" onclick="resPeriodo(30)">30 dias</button>
         <button type="button" class="res-periodo" data-dias="90" onclick="resPeriodo(90)">90 dias</button>
+        <span style="width:1px; height:24px; background:var(--cinza-borda); margin:0 4px;"></span>
+        <input type="date" id="res-data-ini" class="res-data" onchange="resPersonalizado()">
+        <span style="color:var(--cinza-texto); font-size:13px;">até</span>
+        <input type="date" id="res-data-fim" class="res-data" onchange="resPersonalizado()">
       </div>
 
       <div id="res-conteudo">
@@ -1760,6 +1771,7 @@ function abrirConversaDoKanban(conversaId) {
 let resDias = 7;
 let resClinicaId = null;
 let resInicializado = false;
+let resCustom = null;   // {inicio, fim} quando o período é personalizado (senão usa resDias)
 
 function inicializarResultadosSePreciso() {
   if (resInicializado) return;
@@ -1780,9 +1792,22 @@ function inicializarResultadosSePreciso() {
 
 function resPeriodo(dias) {
   resDias = dias;
+  resCustom = null;
+  document.getElementById('res-data-ini').value = '';
+  document.getElementById('res-data-fim').value = '';
   document.querySelectorAll('.res-periodo').forEach(b => {
     b.classList.toggle('aba-ativa', parseInt(b.dataset.dias, 10) === dias);
   });
+  carregarResultados();
+}
+
+function resPersonalizado() {
+  let i = document.getElementById('res-data-ini').value;
+  let f = document.getElementById('res-data-fim').value;
+  if (!i || !f) return;            // espera as duas datas
+  if (i > f) { [i, f] = [f, i]; }  // tolera ordem invertida
+  resCustom = { inicio: i, fim: f };
+  document.querySelectorAll('.res-periodo').forEach(b => b.classList.remove('aba-ativa'));
   carregarResultados();
 }
 
@@ -1798,9 +1823,15 @@ async function carregarResultados() {
       '<div style="padding:40px; text-align:center; color:var(--cinza-fraco);">Selecione um cliente pra ver os resultados.</div>';
     return;
   }
-  const hoje = new Date();
-  const ini = new Date(hoje); ini.setDate(ini.getDate() - (resDias - 1));
-  const params = new URLSearchParams({ inicio: iso(ini), fim: iso(hoje) });
+  let inicio, fim;
+  if (resCustom) {
+    inicio = resCustom.inicio; fim = resCustom.fim;
+  } else {
+    const hoje = new Date();
+    const ini = new Date(hoje); ini.setDate(ini.getDate() - (resDias - 1));
+    inicio = iso(ini); fim = iso(hoje);
+  }
+  const params = new URLSearchParams({ inicio, fim });
   if (resClinicaId !== 'meu') params.set('clinica_id', resClinicaId);
 
   document.getElementById('res-conteudo').innerHTML =
