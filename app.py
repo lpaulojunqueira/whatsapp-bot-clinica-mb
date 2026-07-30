@@ -298,6 +298,12 @@ def _formatar_data_extensa(dt):
     return f"{dia_semana}, {dt.day} de {mes} de {dt.year}"
 
 
+def _formatar_data_lembrete(dt):
+    """Pro lembrete de confirmação: 'quinta-feira, 30 de julho' (minúsculo e sem
+    ano — a consulta é sempre 'hoje', então o ano fica redundante na frase)."""
+    return f"{DIAS_SEMANA[dt.weekday()]}, {dt.day} de {MESES[dt.month - 1]}"
+
+
 def _periodo_do_dia(dt):
     """manhã / tarde / noite / madrugada"""
     h = dt.hour
@@ -1663,7 +1669,7 @@ def _enviar_lembretes():
             continue
         try:
             nome = (ag.get("nome_lead") or "").strip().split(" ")[0] or "Olá"
-            data_fmt = _formatar_data_extensa(ag["data_hora"])
+            data_fmt = _formatar_data_lembrete(ag["data_hora"])
             hora_fmt = ag["data_hora"].strftime("%H:%M")
             ok = enviar_template_whatsapp(
                 ag["phone_number_id"], ag["numero_lead"],
