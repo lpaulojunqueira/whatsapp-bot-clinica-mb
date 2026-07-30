@@ -925,6 +925,139 @@ def dashboard_capi_resumo(clinica_id, data_inicio, data_fim):
     return {r["event_name"]: {"enviados": r["enviados"], "erros": r["erros"]} for r in rows}
 
 
+# ============================================================
+# PERFIL DEMO (dados fictícios pra apresentação)
+# ============================================================
+DEMO_PHONE_ID = "DEMO_ESTETICA_AURORA"
+DEMO_NOME = "Estética Aurora (Demo)"
+
+
+def obter_clinica_demo():
+    """Retorna o id da clínica demo, criando-a se não existir. Ela nunca recebe
+    webhook real (phone_number_id fake) e fica com CAPI/follow-up desligados."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM clinicas WHERE phone_number_id = %s", (DEMO_PHONE_ID,))
+    row = cur.fetchone()
+    if row:
+        cid = row[0]
+    else:
+        cur.execute(
+            """INSERT INTO clinicas (nome, phone_number_id, system_prompt)
+               VALUES (%s, %s, %s) RETURNING id""",
+            (DEMO_NOME, DEMO_PHONE_ID, "Clínica demo (apresentação) — não atende de verdade.")
+        )
+        cid = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return cid
+
+
+def limpar_demo():
+    """Apaga todos os dados semeados da clínica demo (mantém a clínica)."""
+    cid = obter_clinica_demo()
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM vendas WHERE clinica_id = %s", (cid,))
+    cur.execute("DELETE FROM followups WHERE clinica_id = %s", (cid,))
+    cur.execute("DELETE FROM capi_eventos WHERE clinica_id = %s", (cid,))
+    cur.execute("DELETE FROM agendamentos WHERE clinica_id = %s", (cid,))
+    cur.execute(
+        "DELETE FROM mensagens WHERE conversa_id IN (SELECT id FROM conversas WHERE clinica_id = %s)",
+        (cid,)
+    )
+    cur.execute("DELETE FROM conversas WHERE clinica_id = %s", (cid,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return cid
+
+
+def semear_demo():
+    """
+    Semeia a clínica demo com dados realistas (escala 'clínica em ascensão'):
+    ~70 conversas nos últimos 28 dias espalhadas nas 4 etapas do Kanban,
+    ~25 agendamentos e ~10 vendas. Reexecutar limpa e refaz.
+    """
+    import random
+    cid = limpar_demo()
+    conn = _conectar()
+    cur = conn.cursor()
+
+    nomes = [
+        "Juliana Pereira", "Mariana Costa", "Fernanda Lima", "Patrícia Souza",
+        "Camila Rocha", "Aline Ferreira", "Bruna Almeida", "Renata Dias",
+        "Carla Mendes", "Tatiane Ribeiro", "Vanessa Martins", "Débora Nunes",
+        "Sabrina Oliveira", "Larissa Gomes", "Priscila Araújo", "Jéssica Barros",
+        "Amanda Teixeira", "Natália Cardoso", "Isabela Freitas", "Michele Santos",
+        "Rafaela Moraes", "Gabriela Pinto", "Letícia Ramos", "Bianca Carvalho",
+        "Daniela Correia",
+    ]
+    valores = [786.24, 990.0, 1300.0, 1360.0, 1440.0, 1500.0, 1800.0, 2080.0, 2496.0, 3000.0]
+    agora = _agora_brasil()
+
+    def num():
+        return ("55" + str(random.choice([51, 11, 54, 35, 47]))
+                + "9" + str(random.randint(10000000, 99999999)))
+
+    plano = (["comprou"] * 10 + ["agendado"] * 15
+             + ["atendimento"] * 20 + ["novo"] * 25)
+    random.shuffle(plano)
+
+    vi = 0
+    for i, etapa in enumerate(plano):
+        nome = random.choice(nomes)
+        numero = num()
+        criada = agora - timedelta(days=random.uniform(0, 28), hours=random.uniform(0, 12))
+        ctwa = ("democlid_%d" % i) if random.random() < 0.6 else None
+
+        cur.execute(
+            """INSERT INTO conversas (clinica_id, numero_lead, criada_em, atualizada_em, ctwa_clid)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+            (cid, numero, criada, criada, ctwa)
+        )
+        conv_id = cur.fetchone()[0]
+
+        n_msgs = {"novo": random.randint(1, 2), "atendimento": random.randint(4, 9),
+                  "agendado": random.randint(4, 10), "comprou": random.randint(5, 12)}[etapa]
+        for k in range(n_msgs):
+            role = "user" if k % 2 == 0 else "assistant"
+            cur.execute(
+                """INSERT INTO mensagens (conversa_id, role, conteudo, criada_em)
+                   VALUES (%s, %s, %s, %s)""",
+                (conv_id, role, "(mensagem demo)", criada + timedelta(minutes=5 * k))
+            )
+
+        if etapa in ("agendado", "comprou"):
+            if random.random() < 0.5:
+                dh = agora + timedelta(days=random.randint(1, 10), hours=random.randint(0, 6))
+            else:
+                dh = criada + timedelta(days=random.randint(0, 3), hours=random.randint(1, 6))
+            cur.execute(
+                """INSERT INTO agendamentos
+                     (clinica_id, conversa_id, numero_lead, nome_lead, data_hora,
+                      duracao_minutos, status, origem, criado_em)
+                   VALUES (%s, %s, %s, %s, %s, 60, 'confirmado', 'ana', %s)""",
+                (cid, conv_id, numero, nome, dh, criada + timedelta(hours=1))
+            )
+
+        if etapa == "comprou":
+            valor = valores[vi % len(valores)]
+            vi += 1
+            cur.execute(
+                """INSERT INTO vendas
+                     (clinica_id, conversa_id, valor, moeda, descricao, registrada_em)
+                   VALUES (%s, %s, %s, 'BRL', %s, %s)""",
+                (cid, conv_id, valor, "Venda demo", criada + timedelta(days=1))
+            )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return cid
+
+
 def diagnostico_capi():
     """
     Fotografia do estado do rastreamento pra depuração (admin): config CAPI de

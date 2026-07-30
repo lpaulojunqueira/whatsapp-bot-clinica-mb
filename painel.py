@@ -59,6 +59,8 @@ from db import (
     dashboard_conversas_por_dia,
     dashboard_capi_resumo,
     kanban_leads,
+    semear_demo,
+    limpar_demo,
 )
 import capi
 
@@ -2861,6 +2863,23 @@ ADMIN_HTML = """
     </div>
 
     <div class="card">
+      <div class="card-titulo">Perfil demo — apresentação</div>
+      <div class="card-sub">
+        Cria/atualiza a clínica <strong>Estética Aurora (Demo)</strong> com dados
+        fictícios porém realistas (conversas, agendamentos e faturamento) pra deixar
+        Dashboard e Kanban cheios numa demonstração. É uma clínica isolada: não recebe
+        WhatsApp nem dispara rastreamento. Semear de novo limpa e refaz os números.
+      </div>
+      <button class="btn btn-primario" type="button" onclick="semearDemo()">
+        Semear dados demo
+      </button>
+      <button class="btn btn-pequeno" type="button" onclick="limparDemo()" style="margin-left:8px;">
+        Limpar demo
+      </button>
+      <div id="demo-resultado" style="margin-top:14px;"></div>
+    </div>
+
+    <div class="card">
       <div class="card-titulo">Rastreamento Meta — reenviar eventos</div>
       <div class="card-sub">
         Reenvia o evento de conversão (LeadSubmitted) dos agendamentos dos últimos
@@ -3329,6 +3348,33 @@ async function carregarClinicas() {
 }
 
 // ============ CAPI — REENVIO DE EVENTOS ============
+async function semearDemo() {
+  const alvo = document.getElementById('demo-resultado');
+  if (!confirm('Isso limpa e recria os dados fictícios da Estética Aurora (Demo). Continuar?')) return;
+  alvo.innerHTML = '<p style="color:#6B7280; font-size:13px;">Semeando dados demo...</p>';
+  const r = await fetch('/painel/admin/demo/semear', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alvo.innerHTML = '<div class="alerta alerta-erro">Erro: ' + escapar(d.erro || 'falhou') + '</div>';
+    return;
+  }
+  alvo.innerHTML = '<div class="alerta alerta-sucesso">Perfil demo pronto. '
+    + 'Abra o Dashboard/Kanban e selecione <strong>Estética Aurora (Demo)</strong> no seletor de cliente.</div>';
+}
+
+async function limparDemo() {
+  const alvo = document.getElementById('demo-resultado');
+  if (!confirm('Apagar todos os dados fictícios da Estética Aurora (Demo)?')) return;
+  alvo.innerHTML = '<p style="color:#6B7280; font-size:13px;">Limpando...</p>';
+  const r = await fetch('/painel/admin/demo/limpar', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    alvo.innerHTML = '<div class="alerta alerta-erro">Erro: ' + escapar(d.erro || 'falhou') + '</div>';
+    return;
+  }
+  alvo.innerHTML = '<div class="alerta alerta-info">Dados demo apagados.</div>';
+}
+
 async function reenviarEventosCapi(forcar) {
   const alvo = document.getElementById('capi-resultado');
   alvo.innerHTML = '<p style="color:#6B7280; font-size:13px;">Reenviando...</p>';
@@ -3944,6 +3990,27 @@ def registrar_rotas(app):
             return jsonify({"id": uid, "email": email})
         except Exception as e:
             return jsonify({"erro": str(e)}), 400
+
+    # ---------- Admin: perfil DEMO (apresentação) ----------
+    @app.route("/painel/admin/demo/semear", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_demo_semear():
+        try:
+            cid = semear_demo()
+            return jsonify({"ok": True, "clinica_id": cid})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 500
+
+    @app.route("/painel/admin/demo/limpar", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_demo_limpar():
+        try:
+            cid = limpar_demo()
+            return jsonify({"ok": True, "clinica_id": cid})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 500
 
     # ---------- Admin: tela HTML completa ----------
     @app.route("/painel/admin", methods=["GET"])
