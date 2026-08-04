@@ -1664,9 +1664,9 @@ function fecharImportar() {
 }
 
 function baixarModeloImport() {
-  const csv = 'nome;telefone;data;hora;observacao\n'
-    + 'Maria Silva;(19) 99999-1234;05/08/2026;14:30;Retorno\n'
-    + 'João Souza;19 98888-0000;06/08/2026;09:00;Avaliação\n';
+  const csv = 'nome;telefone;data;hora;observacao\\n'
+    + 'Maria Silva;(19) 99999-1234;05/08/2026;14:30;Retorno\\n'
+    + 'João Souza;19 98888-0000;06/08/2026;09:00;Avaliação\\n';
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
