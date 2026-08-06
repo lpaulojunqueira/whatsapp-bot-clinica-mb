@@ -1058,9 +1058,22 @@ PAINEL_HTML = """
       display: flex !important;      /* sobrescreve display:none padrão de .detalhe mobile */
       position: static !important;
       top: auto; left: auto; right: auto; bottom: auto;
-      min-height: 60vh;
+      min-height: auto;
+      overflow: visible;             /* deixa o calendário crescer, não corta embaixo */
       z-index: auto;
     }
+
+    /* No mobile a VIEW inteira rola na vertical (header fixo, conteúdo rola).
+       Antes o calendário ficava cortado embaixo, sem como alcançar. O grid mantém
+       só o scroll horizontal dos 7 dias. */
+    .view-agenda { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .view-agenda .agenda-container {
+      flex: none;
+      height: auto;
+      overflow-x: auto;
+      overflow-y: visible;
+    }
+    .view-agenda .agenda-vazio { height: auto; min-height: 40vh; }
 
     /* Sidebar da agenda no mobile: layout mais compacto */
     .sidebar-agenda .sidebar-top { padding: 12px 14px 8px; }
