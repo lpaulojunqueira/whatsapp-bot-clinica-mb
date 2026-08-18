@@ -32,6 +32,7 @@ from db import (
     atualizar_clinica,
     atualizar_prompt_clinica,
     criar_usuario_clinica,
+    redefinir_senha_usuario,
     obter_config_horarios,
     atualizar_config_horarios,
     listar_agendamentos,
@@ -3185,6 +3186,24 @@ ADMIN_HTML = """
         <button class="btn btn-verde" type="submit">Criar usuário</button>
       </form>
     </div>
+
+    <div class="card">
+      <div class="card-titulo">Redefinir senha de um usuário</div>
+      <div class="card-sub">
+        Define uma nova senha pelo email de login do usuário. A senha antiga é
+        substituída na hora — avise a pessoa da nova senha.
+      </div>
+      <form onsubmit="redefinirSenhaSubmit(event)">
+        <label>Email do usuário</label>
+        <input type="email" id="rs-email" required placeholder="usuario@exemplo.com">
+
+        <label>Nova senha <span class="label-dica">— mínimo 6 caracteres, anote</span></label>
+        <input type="text" id="rs-senha" required placeholder="Nova senha">
+
+        <button class="btn btn-verde" type="submit">Redefinir senha</button>
+      </form>
+      <div id="rs-resultado" style="margin-top:12px;"></div>
+    </div>
   </div>
 
   <!-- ============ ABA PROMPTS ============ -->
@@ -3823,6 +3842,31 @@ async function criarUsuarioSubmit(e) {
   }
 }
 
+async function redefinirSenhaSubmit(e) {
+  e.preventDefault();
+  const email = document.getElementById('rs-email').value.trim();
+  const senha = document.getElementById('rs-senha').value;
+  const alvo = document.getElementById('rs-resultado');
+  if (senha.length < 6) {
+    alvo.innerHTML = '<div class="alerta alerta-erro">A senha precisa ter ao menos 6 caracteres.</div>';
+    return;
+  }
+  const r = await fetch('/painel/admin/usuarios/redefinir-senha', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ email, senha })
+  });
+  const data = await r.json().catch(() => ({}));
+  if (r.ok) {
+    alvo.innerHTML = `<div class="alerta alerta-sucesso">Senha de <strong>${escapar(data.nome || email)}</strong> `
+      + `(${escapar(email)}) redefinida. Anote: <code>${escapar(senha)}</code> — avise a pessoa.</div>`;
+    document.getElementById('rs-email').value = '';
+    document.getElementById('rs-senha').value = '';
+  } else {
+    alvo.innerHTML = '<div class="alerta alerta-erro">Erro: ' + escapar(data.erro || 'falha') + '</div>';
+  }
+}
+
 // ============ PROMPT ============
 async function carregarPrompt() {
   const clinicaId = document.getElementById('pr-clinica').value;
@@ -4276,6 +4320,23 @@ def registrar_rotas(app):
         try:
             uid = criar_usuario_clinica(email, senha, nome, int(clinica_id))
             return jsonify({"id": uid, "email": email})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 400
+
+    @app.route("/painel/admin/usuarios/redefinir-senha", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_redefinir_senha():
+        body = request.get_json() or {}
+        email = (body.get("email") or "").strip().lower()
+        senha = body.get("senha") or ""
+        if not email or len(senha) < 6:
+            return jsonify({"erro": "informe o email e uma senha de ao menos 6 caracteres"}), 400
+        try:
+            nome = redefinir_senha_usuario(email, senha)
+            if nome is None:
+                return jsonify({"erro": "nenhum usuário com esse email"}), 404
+            return jsonify({"ok": True, "nome": nome, "email": email})
         except Exception as e:
             return jsonify({"erro": str(e)}), 400
 

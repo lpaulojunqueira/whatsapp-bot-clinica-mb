@@ -1385,6 +1385,23 @@ def criar_usuario_clinica(email, senha, nome, clinica_id):
     return user_id
 
 
+def redefinir_senha_usuario(email, nova_senha):
+    """Redefine a senha de um usuário pelo email. Retorna o nome do usuário se
+    achou e atualizou, ou None se o email não existe."""
+    from werkzeug.security import generate_password_hash
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE usuarios SET senha_hash = %s WHERE email = %s RETURNING nome",
+        (generate_password_hash(nova_senha), email.strip().lower())
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
+
+
 def listar_clinicas():
     """Lista todas as clínicas — pra o admin escolher quando cria usuário."""
     conn = _conectar()
