@@ -1228,25 +1228,6 @@ def _executar_ferramenta_dono(nome, args, clinica):
     return f"Ferramenta '{nome}' desconhecida.", extra
 
 
-
-    """Injeta no prompt a configuração de horários da clínica."""
-    cfg = obter_config_horarios(clinica_id)
-    dias_map = {1: "segunda", 2: "terça", 3: "quarta", 4: "quinta",
-                5: "sexta", 6: "sábado", 7: "domingo"}
-    dias_atende = [dias_map[int(d)] for d in cfg["dias_semana"].split(",")]
-    txt = (
-        f"\n\n===== HORÁRIOS DE ATENDIMENTO DESTA CLÍNICA =====\n"
-        f"- Dias: {', '.join(dias_atende)}\n"
-        f"- Horário: {cfg['hora_inicio'].strftime('%H:%M')} às {cfg['hora_fim'].strftime('%H:%M')}\n"
-        f"- Duração de cada consulta: {cfg['duracao_minutos']} minutos\n"
-        f"- Antecedência mínima pra agendamento: {cfg['antecedencia_minima_minutos']} minutos\n"
-    )
-    if cfg.get("almoco_inicio") and cfg.get("almoco_fim"):
-        txt += f"- Pausa: {cfg['almoco_inicio'].strftime('%H:%M')} às {cfg['almoco_fim'].strftime('%H:%M')}\n"
-    txt += "================================================="
-    return txt
-
-
 def _formatar_config_horarios_pro_prompt(clinica_id):
     """Injeta no prompt a configuração de horários da clínica."""
     cfg = obter_config_horarios(clinica_id)
