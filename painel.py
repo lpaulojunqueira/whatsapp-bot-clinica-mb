@@ -4750,7 +4750,9 @@ def registrar_rotas(app):
         # Config de horários
         cfg = obter_config_horarios(clinica_id)
         # Serializa campos time/date
-        for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim"):
+        for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim",
+                      "hora_inicio_sabado", "hora_fim_sabado",
+                      "hora_inicio_domingo", "hora_fim_domingo"):
             if cfg.get(campo) is not None:
                 cfg[campo] = cfg[campo].strftime("%H:%M:%S")
         if cfg.get("atualizada_em"):
