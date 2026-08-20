@@ -3334,6 +3334,31 @@ ADMIN_HTML = """
           </div>
         </div>
 
+        <div style="margin:6px 0; font-weight:600; font-size:13px; color:var(--carvao);">
+          Fim de semana
+          <span class="label-dica" style="font-weight:400;">— opcional; em branco = mesmo horário dos dias úteis. Só vale se o dia estiver marcado acima.</span>
+        </div>
+        <div class="row">
+          <div>
+            <label>Sábado — abre</label>
+            <input type="time" id="hr-sab-inicio">
+          </div>
+          <div>
+            <label>Sábado — fecha</label>
+            <input type="time" id="hr-sab-fim">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Domingo — abre</label>
+            <input type="time" id="hr-dom-inicio">
+          </div>
+          <div>
+            <label>Domingo — fecha</label>
+            <input type="time" id="hr-dom-fim">
+          </div>
+        </div>
+
         <div class="row">
           <div>
             <label>Duração de cada consulta (minutos)</label>
@@ -3960,6 +3985,10 @@ async function carregarHorarios() {
   document.getElementById('hr-fim').value = (cfg.hora_fim || '').substring(0, 5);
   document.getElementById('hr-almoco-inicio').value = (cfg.almoco_inicio || '').substring(0, 5);
   document.getElementById('hr-almoco-fim').value = (cfg.almoco_fim || '').substring(0, 5);
+  document.getElementById('hr-sab-inicio').value = (cfg.hora_inicio_sabado || '').substring(0, 5);
+  document.getElementById('hr-sab-fim').value = (cfg.hora_fim_sabado || '').substring(0, 5);
+  document.getElementById('hr-dom-inicio').value = (cfg.hora_inicio_domingo || '').substring(0, 5);
+  document.getElementById('hr-dom-fim').value = (cfg.hora_fim_domingo || '').substring(0, 5);
   document.getElementById('hr-duracao').value = cfg.duracao_minutos;
   document.getElementById('hr-antecedencia').value = cfg.antecedencia_minima_minutos;
 
@@ -3985,6 +4014,10 @@ async function salvarHorarios() {
     hora_fim: document.getElementById('hr-fim').value,
     almoco_inicio: document.getElementById('hr-almoco-inicio').value || null,
     almoco_fim: document.getElementById('hr-almoco-fim').value || null,
+    hora_inicio_sabado: document.getElementById('hr-sab-inicio').value || null,
+    hora_fim_sabado: document.getElementById('hr-sab-fim').value || null,
+    hora_inicio_domingo: document.getElementById('hr-dom-inicio').value || null,
+    hora_fim_domingo: document.getElementById('hr-dom-fim').value || null,
     duracao_minutos: parseInt(document.getElementById('hr-duracao').value, 10),
     antecedencia_minima_minutos: parseInt(document.getElementById('hr-antecedencia').value, 10),
   };
@@ -4489,7 +4522,9 @@ def registrar_rotas(app):
         prof_id = int(prof_str) if prof_str and prof_str.isdigit() else None
         cfg = obter_config_horarios(clinica_id, prof_id)
         # Converte tipos pra JSON
-        for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim"):
+        for campo in ("hora_inicio", "hora_fim", "almoco_inicio", "almoco_fim",
+                      "hora_inicio_sabado", "hora_fim_sabado",
+                      "hora_inicio_domingo", "hora_fim_domingo"):
             if cfg.get(campo) is not None:
                 cfg[campo] = cfg[campo].strftime("%H:%M:%S")
         if cfg.get("atualizada_em"):
@@ -4508,6 +4543,12 @@ def registrar_rotas(app):
             return jsonify({"erro": "clínica não encontrada"}), 404
         prof_id = body.get("profissional_id")
         prof_id = int(prof_id) if prof_id else None
+        # Fim de semana: só repassa quando a chave veio no body (None = limpar).
+        fds_kwargs = {}
+        for campo in ("hora_inicio_sabado", "hora_fim_sabado",
+                      "hora_inicio_domingo", "hora_fim_domingo"):
+            if campo in body:
+                fds_kwargs[campo] = body[campo] or None
         try:
             atualizar_config_horarios(
                 clinica_id,
@@ -4519,6 +4560,7 @@ def registrar_rotas(app):
                 almoco_inicio=body.get("almoco_inicio"),
                 almoco_fim=body.get("almoco_fim"),
                 profissional_id=prof_id,
+                **fds_kwargs,
             )
             return jsonify({"ok": True})
         except Exception as e:

@@ -267,6 +267,15 @@ def inicializar_banco():
         WHERE status = 'confirmado';
     """)
 
+    # Horários próprios pra sábado e domingo (nullable). NULL = usa o horário dos
+    # dias úteis (hora_inicio/hora_fim), então clínicas antigas ficam idênticas.
+    for _tab in ("config_horarios", "config_horarios_prof"):
+        for _col in ("hora_inicio_sabado", "hora_fim_sabado",
+                     "hora_inicio_domingo", "hora_fim_domingo"):
+            cur.execute(
+                f"ALTER TABLE {_tab} ADD COLUMN IF NOT EXISTS {_col} TIME;"
+            )
+
     # Índice pra busca rápida de duplicatas.
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_mensagens_msg_id
@@ -1814,11 +1823,16 @@ def obter_config_horarios(clinica_id, profissional_id=None):
     return config
 
 
+_UNSET = object()  # sentinela: distingue "não mexer" de "limpar (NULL)"
+
+
 def atualizar_config_horarios(clinica_id, duracao_minutos=None,
                               antecedencia_minima_minutos=None,
                               dias_semana=None, hora_inicio=None,
                               hora_fim=None, almoco_inicio=None,
-                              almoco_fim=None, profissional_id=None):
+                              almoco_fim=None, profissional_id=None,
+                              hora_inicio_sabado=_UNSET, hora_fim_sabado=_UNSET,
+                              hora_inicio_domingo=_UNSET, hora_fim_domingo=_UNSET):
     """
     Atualiza apenas os campos passados; deixa o resto intacto.
     - profissional_id=None: mexe na config da clínica (default). Antigo, intacto.
@@ -1834,6 +1848,20 @@ def atualizar_config_horarios(clinica_id, duracao_minutos=None,
         ("almoco_inicio", almoco_inicio),
         ("almoco_fim", almoco_fim),
     ]
+    # Fim de semana: None é valor válido (limpa = herda dos úteis), então só
+    # entram quando != _UNSET, e podem gravar NULL.
+    campos_fds = [
+        ("hora_inicio_sabado", hora_inicio_sabado),
+        ("hora_fim_sabado", hora_fim_sabado),
+        ("hora_inicio_domingo", hora_inicio_domingo),
+        ("hora_fim_domingo", hora_fim_domingo),
+    ]
+
+    def _acrescenta_fds(campos, valores):
+        for nome, valor in campos_fds:
+            if valor is not _UNSET:
+                campos.append(f"{nome} = %s")
+                valores.append(valor)
 
     if profissional_id is not None:
         # Garante uma linha de override, semeada com a config atual da clínica.
@@ -1845,14 +1873,18 @@ def atualizar_config_horarios(clinica_id, duracao_minutos=None,
             INSERT INTO config_horarios_prof
                 (clinica_id, profissional_id, duracao_minutos,
                  antecedencia_minima_minutos, dias_semana, hora_inicio,
-                 hora_fim, almoco_inicio, almoco_fim)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 hora_fim, almoco_inicio, almoco_fim,
+                 hora_inicio_sabado, hora_fim_sabado,
+                 hora_inicio_domingo, hora_fim_domingo)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (clinica_id, profissional_id) DO NOTHING
             """,
             (clinica_id, profissional_id, base["duracao_minutos"],
              base["antecedencia_minima_minutos"], base["dias_semana"],
              base["hora_inicio"], base["hora_fim"],
-             base["almoco_inicio"], base["almoco_fim"])
+             base["almoco_inicio"], base["almoco_fim"],
+             base.get("hora_inicio_sabado"), base.get("hora_fim_sabado"),
+             base.get("hora_inicio_domingo"), base.get("hora_fim_domingo"))
         )
         campos = []
         valores = []
@@ -1860,6 +1892,7 @@ def atualizar_config_horarios(clinica_id, duracao_minutos=None,
             if valor is not None:
                 campos.append(f"{nome} = %s")
                 valores.append(valor)
+        _acrescenta_fds(campos, valores)
         if campos:
             campos.append("atualizada_em = NOW()")
             sql = (f"UPDATE config_horarios_prof SET {', '.join(campos)} "
@@ -1880,6 +1913,7 @@ def atualizar_config_horarios(clinica_id, duracao_minutos=None,
         if valor is not None:
             campos.append(f"{nome} = %s")
             valores.append(valor)
+    _acrescenta_fds(campos, valores)
 
     if not campos:
         return
@@ -2207,8 +2241,18 @@ def obter_horarios_disponiveis(clinica_id, data, profissional_id=None):
         return []
 
     duracao = config["duracao_minutos"]
-    hora_ini = config["hora_inicio"]
-    hora_fim = config["hora_fim"]
+    # Janela do dia: dias úteis (seg-sex) usam hora_inicio/hora_fim; sábado e
+    # domingo podem ter horário próprio. Sem horário próprio, herdam o dos úteis.
+    wd = data.weekday()  # seg=0 ... sáb=5, dom=6
+    if wd == 5 and config.get("hora_inicio_sabado") and config.get("hora_fim_sabado"):
+        hora_ini = config["hora_inicio_sabado"]
+        hora_fim = config["hora_fim_sabado"]
+    elif wd == 6 and config.get("hora_inicio_domingo") and config.get("hora_fim_domingo"):
+        hora_ini = config["hora_inicio_domingo"]
+        hora_fim = config["hora_fim_domingo"]
+    else:
+        hora_ini = config["hora_inicio"]
+        hora_fim = config["hora_fim"]
     almoco_ini = config["almoco_inicio"]
     almoco_fim = config["almoco_fim"]
 

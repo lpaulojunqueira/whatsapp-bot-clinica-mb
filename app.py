@@ -1253,10 +1253,19 @@ def _formatar_config_horarios_pro_prompt(clinica_id):
     dias_map = {1: "segunda", 2: "terça", 3: "quarta", 4: "quinta",
                 5: "sexta", 6: "sábado", 7: "domingo"}
     dias_atende = [dias_map[int(d)] for d in cfg["dias_semana"].split(",")]
+    sab = cfg.get("hora_inicio_sabado") and cfg.get("hora_fim_sabado")
+    dom = cfg.get("hora_inicio_domingo") and cfg.get("hora_fim_domingo")
+    rotulo_uteis = "Horário (seg a sex)" if (sab or dom) else "Horário"
     txt = (
         f"\n\n===== HORÁRIOS DE ATENDIMENTO DESTA CLÍNICA =====\n"
         f"- Dias: {', '.join(dias_atende)}\n"
-        f"- Horário: {cfg['hora_inicio'].strftime('%H:%M')} às {cfg['hora_fim'].strftime('%H:%M')}\n"
+        f"- {rotulo_uteis}: {cfg['hora_inicio'].strftime('%H:%M')} às {cfg['hora_fim'].strftime('%H:%M')}\n"
+    )
+    if sab:
+        txt += f"- Sábado: {cfg['hora_inicio_sabado'].strftime('%H:%M')} às {cfg['hora_fim_sabado'].strftime('%H:%M')}\n"
+    if dom:
+        txt += f"- Domingo: {cfg['hora_inicio_domingo'].strftime('%H:%M')} às {cfg['hora_fim_domingo'].strftime('%H:%M')}\n"
+    txt += (
         f"- Duração de cada consulta: {cfg['duracao_minutos']} minutos\n"
         f"- Antecedência mínima pra agendamento: {cfg['antecedencia_minima_minutos']} minutos\n"
     )
