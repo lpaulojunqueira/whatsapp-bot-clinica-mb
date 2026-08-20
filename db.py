@@ -82,6 +82,9 @@ def inicializar_banco():
         ("followup_lembrete_hora", "TIME DEFAULT '08:00'"),
         ("followup_template_lembrete", "TEXT"),
         ("followup_template_frio", "TEXT"),
+        # Números extras reconhecidos como DONO (além do telefone_humano principal).
+        # Um por linha/vírgula. Só afeta a detecção de modo dono, nada mais.
+        ("telefones_humanos_extras", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE clinicas ADD COLUMN IF NOT EXISTS {coluna} {tipo};")
 
@@ -1506,7 +1509,8 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
                      meta_capi_token=None, capi_ativo=None,
                      meta_test_event_code=None, meta_page_id=None,
                      followup_ativo=None, followup_lembrete_hora=None,
-                     followup_template_lembrete=None, followup_template_frio=None):
+                     followup_template_lembrete=None, followup_template_frio=None,
+                     telefones_humanos_extras=None):
     """
     Atualiza apenas os campos passados (não-None) de uma clínica.
     Strings vazias viram None pra telefone/token/campos CAPI (opcionais).
@@ -1524,6 +1528,9 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
     if telefone_humano is not None:
         campos.append("telefone_humano = %s")
         valores.append((telefone_humano or "").strip() or None)
+    if telefones_humanos_extras is not None:
+        campos.append("telefones_humanos_extras = %s")
+        valores.append((telefones_humanos_extras or "").strip() or None)
     if whatsapp_token is not None:
         campos.append("whatsapp_token = %s")
         valores.append((whatsapp_token or "").strip() or None)

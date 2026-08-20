@@ -3402,6 +3402,9 @@ ADMIN_HTML = """
       <label>Telefone humano <span class="label-dica">— número do dono, recebe notificações e ativa "modo dono"</span></label>
       <input type="text" id="ed-fone-humano">
 
+      <label>Telefones humanos adicionais <span class="label-dica">— opcional; um por linha. Também são reconhecidos como dono (ajustar agenda, contabilizar venda). NÃO recebem notificação.</span></label>
+      <textarea id="ed-fones-extras" style="min-height:70px" placeholder="Ex: cada profissional num número, um por linha"></textarea>
+
       <label>Prompt da Ana</label>
       <textarea id="ed-prompt" style="min-height:200px"></textarea>
 
@@ -3736,6 +3739,7 @@ async function abrirEdicaoCliente(clinicaId) {
   document.getElementById('ed-phone-id').value = c.phone_number_id || '';
   document.getElementById('ed-token').value = c.whatsapp_token || '';
   document.getElementById('ed-fone-humano').value = c.telefone_humano || '';
+  document.getElementById('ed-fones-extras').value = c.telefones_humanos_extras || '';
   document.getElementById('ed-prompt').value = c.system_prompt || '';
   // Rastreamento Meta. O token NÃO é pré-preenchido (fica em branco = mantém o atual).
   document.getElementById('ed-meta-dataset').value = c.meta_dataset_id || '';
@@ -3763,6 +3767,7 @@ async function salvarEdicaoCliente(e) {
     phone_number_id: document.getElementById('ed-phone-id').value.trim(),
     whatsapp_token: document.getElementById('ed-token').value.trim(),
     telefone_humano: document.getElementById('ed-fone-humano').value.trim(),
+    telefones_humanos_extras: document.getElementById('ed-fones-extras').value.trim(),
     system_prompt: document.getElementById('ed-prompt').value.trim(),
     meta_dataset_id: document.getElementById('ed-meta-dataset').value.trim(),
     meta_page_id: document.getElementById('ed-meta-pageid').value.trim(),
@@ -4487,6 +4492,7 @@ def registrar_rotas(app):
                 nome=body.get("nome"),
                 phone_number_id=body.get("phone_number_id"),
                 telefone_humano=body.get("telefone_humano"),
+                telefones_humanos_extras=body.get("telefones_humanos_extras"),
                 whatsapp_token=body.get("whatsapp_token"),
                 system_prompt=body.get("system_prompt"),
                 meta_dataset_id=body.get("meta_dataset_id"),

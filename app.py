@@ -189,6 +189,19 @@ def _telefone_canonico(numero):
     return d[-10:] if len(d) >= 10 else d
 
 
+def _numeros_dono_canonicos(clinica):
+    """
+    Conjunto de números (na forma canônica) reconhecidos como DONO da clínica:
+    o telefone_humano principal + os telefones_humanos_extras (um por linha ou
+    vírgula). Serve só pra detecção de modo dono; notificação/fallback seguem no
+    número principal.
+    """
+    brutos = [clinica.get("telefone_humano") or ""]
+    extras = clinica.get("telefones_humanos_extras") or ""
+    brutos += re.split(r"[,\n;]+", extras)
+    return {c for c in (_telefone_canonico(b) for b in brutos) if c}
+
+
 def _normalizar_telefone_br(telefone):
     """Limpa formatação e adiciona 55 se necessário. Retorna só os dígitos."""
     if not telefone:
@@ -1516,19 +1529,17 @@ def processar_mensagem_em_background(
         # Token específico da clínica (ou None = usa o global como fallback).
         token_clinica = clinica.get("whatsapp_token")
 
-        # MODO DONO: verifica se o número que enviou é o telefone_humano dessa clínica.
+        # MODO DONO: número que enviou é o principal OU um dos adicionais da clínica.
         # Comparação robusta (ignora DDI e o 9º dígito, que variam de formato).
         modo_dono = False
-        tel_humano = clinica.get("telefone_humano")
-        if tel_humano:
-            can_humano = _telefone_canonico(tel_humano)
-            can_lead = _telefone_canonico(numero_lead)
-            if can_humano and can_lead and can_humano == can_lead:
-                modo_dono = True
-                print(f"🔑 [{clinica['nome']}] MODO DONO ativado pra {numero_lead}")
-            else:
-                print(f"🙅 [{clinica['nome']}] não é dono: lead={numero_lead} "
-                      f"(canon={can_lead}) vs humano='{tel_humano}' (canon={can_humano})")
+        donos_canon = _numeros_dono_canonicos(clinica)
+        can_lead = _telefone_canonico(numero_lead)
+        if donos_canon and can_lead and can_lead in donos_canon:
+            modo_dono = True
+            print(f"🔑 [{clinica['nome']}] MODO DONO ativado pra {numero_lead}")
+        else:
+            print(f"🙅 [{clinica['nome']}] não é dono: lead={numero_lead} "
+                  f"(canon={can_lead}) donos={donos_canon or '{}'}")
 
         print(f"🟢 [BG] modo_dono={modo_dono}, vai marcar como lida...")
         # 1) Mostra check azul + "digitando..." imediatamente
