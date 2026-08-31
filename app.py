@@ -713,8 +713,10 @@ CHAME registrar_venda. Não confirme a venda antes da ferramenta retornar o ID.
 
 USE estas ferramentas:
 - bloquear_horario: cria um bloqueio na agenda (período em que a clínica não pode receber agendamentos da Ana com pacientes)
-- agendar_paciente_manual: registra um agendamento que veio de fora (telefone direto, walk-in, etc)
-- listar_agenda: consulta o que está marcado num período
+- agendar_paciente_manual: registra um agendamento NOVO que veio de fora (telefone direto, walk-in, etc)
+- remarcar_agendamento: MOVE um agendamento que já existe pra outro dia/hora (ex: paciente faltou e quer remarcar). Se não souber o ID, chame listar_agenda antes. NÃO use agendar_paciente_manual pra remarcar (isso cria um duplicado).
+- cancelar_agendamento: cancela um agendamento existente. Se não souber o ID, chame listar_agenda antes.
+- listar_agenda: consulta o que está marcado num período (mostra o ID de cada agendamento, use pra remarcar/cancelar)
 - listar_bloqueios: consulta bloqueios ativos num período
 - remover_bloqueio: remove um bloqueio existente
 - verificar_disponibilidade: também disponível, se o dono quiser ver horários livres
@@ -831,6 +833,47 @@ FERRAMENTAS_DONO = [
                 }
             },
             "required": ["bloqueio_id"]
+        }
+    },
+    {
+        "name": "remarcar_agendamento",
+        "description": (
+            "Move um agendamento existente pra outro dia/horário, mantendo o mesmo "
+            "registro (nome, motivo, profissional). Use quando o dono disser que um "
+            "paciente quer MUDAR o horário de uma consulta já marcada. Se não souber "
+            "o ID, chame listar_agenda antes pra descobrir."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agendamento_id": {
+                    "type": "integer",
+                    "description": "ID do agendamento a remarcar (aparece no listar_agenda)."
+                },
+                "nova_data_hora": {
+                    "type": "string",
+                    "description": "Nova data e hora, formato AAAA-MM-DDTHH:MM."
+                }
+            },
+            "required": ["agendamento_id", "nova_data_hora"]
+        }
+    },
+    {
+        "name": "cancelar_agendamento",
+        "description": (
+            "Cancela um agendamento existente (marca como cancelado, não apaga). Use "
+            "quando o dono pedir pra cancelar uma consulta. Se não souber o ID, chame "
+            "listar_agenda antes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agendamento_id": {
+                    "type": "integer",
+                    "description": "ID do agendamento a cancelar (aparece no listar_agenda)."
+                }
+            },
+            "required": ["agendamento_id"]
         }
     },
     # A Ana no modo dono também pode verificar disponibilidade
@@ -1062,6 +1105,30 @@ def _executar_ferramenta(nome, args, clinica, conversa_id, numero_lead):
     return f"Erro: ferramenta '{nome}' desconhecida.", extra
 
 
+def _ferramentas_dono(tem_profissionais):
+    """
+    Ferramentas do modo dono. Em clínica multi-profissional, injeta profissional_id
+    (obrigatório) em agendar_paciente_manual — pra marcar na agenda certa e checar
+    conflito só na agenda daquele profissional. Remarcar/cancelar não precisam: o
+    sistema já sabe de qual profissional é o agendamento.
+    """
+    if not tem_profissionais:
+        return FERRAMENTAS_DONO
+    tools = copy.deepcopy(FERRAMENTAS_DONO)
+    for t in tools:
+        if t["name"] == "agendar_paciente_manual":
+            t["input_schema"]["properties"]["profissional_id"] = {
+                "type": "integer",
+                "description": (
+                    "ID do profissional em cuja agenda marcar. Precisa ser um dos IDs "
+                    "listados na seção PROFISSIONAIS DESTA CLÍNICA."
+                )
+            }
+            if "profissional_id" not in t["input_schema"]["required"]:
+                t["input_schema"]["required"].append("profissional_id")
+    return tools
+
+
 def _executar_ferramenta_dono(nome, args, clinica):
     """
     Executa as ferramentas do MODO DONO (dentista falando com Ana).
@@ -1106,6 +1173,11 @@ def _executar_ferramenta_dono(nome, args, clinica):
         telefone = (args.get("telefone_paciente") or "").strip()
         observacao = args.get("observacao") or "Agendado manualmente pelo responsável"
 
+        # Multi-profissional: valida/pega o profissional_id (None em clínica single).
+        pid, erro_prof = _resolver_profissional_lead(args, clinica)
+        if erro_prof:
+            return erro_prof, extra
+
         try:
             ag_id = criar_agendamento(
                 clinica_id=clinica["id"],
@@ -1113,7 +1185,8 @@ def _executar_ferramenta_dono(nome, args, clinica):
                 data_hora=dt,
                 nome_lead=nome_paciente,
                 origem="manual",
-                observacao=observacao
+                observacao=observacao,
+                profissional_id=pid,
             )
             extra["agendamento_criado_id"] = ag_id
             return (
@@ -1148,7 +1221,7 @@ def _executar_ferramenta_dono(nome, args, clinica):
             dh = a["data_hora"]
             origem = "Ana" if a["origem"] == "ana" else "Manual"
             linhas.append(
-                f"  - {dh.strftime('%d/%m %H:%M')} | {a['nome_lead']} "
+                f"  - #{a['id']} | {dh.strftime('%d/%m %H:%M')} | {a['nome_lead']} "
                 f"({a['numero_lead']}) [{origem}]"
             )
         return f"Agendamentos:\n" + "\n".join(linhas), extra
@@ -1184,6 +1257,42 @@ def _executar_ferramenta_dono(nome, args, clinica):
         if remover_bloqueio(bid):
             return f"Bloqueio #{bid} removido.", extra
         return f"Bloqueio #{bid} não encontrado.", extra
+
+    elif nome == "remarcar_agendamento":
+        try:
+            aid = int(args["agendamento_id"])
+            nova = datetime.strptime(args["nova_data_hora"], "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+        except (ValueError, KeyError, TypeError):
+            return "Erro: informe o ID do agendamento e a nova data/hora (AAAA-MM-DDTHH:MM).", extra
+        ag = obter_agendamento(aid)
+        if not ag or ag["clinica_id"] != clinica["id"]:
+            return f"Erro: agendamento #{aid} não encontrado nesta clínica.", extra
+        if ag["status"] != "confirmado":
+            return f"Erro: agendamento #{aid} não está ativo (status: {ag['status']}).", extra
+        try:
+            remarcar_agendamento(aid, nova)
+            extra["agendamento_remarcado_id"] = aid
+            return (
+                f"Agendamento #{aid} ({ag.get('nome_lead') or 'paciente'}) remarcado "
+                f"pra {nova.strftime('%d/%m às %H:%M')}."
+            ), extra
+        except ValueError as e:
+            if "ocupado" in str(e):
+                return "Esse horário está ocupado na agenda desse profissional. Quer ver os livres?", extra
+            return f"Erro: {e}", extra
+
+    elif nome == "cancelar_agendamento":
+        try:
+            aid = int(args["agendamento_id"])
+        except (ValueError, KeyError, TypeError):
+            return "Erro: ID inválido.", extra
+        ag = obter_agendamento(aid)
+        if not ag or ag["clinica_id"] != clinica["id"]:
+            return f"Erro: agendamento #{aid} não encontrado nesta clínica.", extra
+        if cancelar_agendamento(aid):
+            extra["agendamento_cancelado_id"] = aid
+            return f"Agendamento #{aid} ({ag.get('nome_lead') or 'paciente'}) cancelado.", extra
+        return f"Agendamento #{aid} já não estava ativo.", extra
 
     elif nome == "registrar_venda":
         # Número é OPCIONAL: se o cliente falou com a agente em algum momento,
@@ -1306,9 +1415,14 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
     if modo_dono:
         # Modo dono: prompt fixo de assistente executiva + ferramentas administrativas
         system_completo = PROMPT_MODO_DONO + construir_contexto_temporal()
+        ferramentas_disponiveis = FERRAMENTAS_DONO
         if clinica:
             system_completo += _formatar_config_horarios_pro_prompt(clinica["id"])
-        ferramentas_disponiveis = FERRAMENTAS_DONO
+            # Multi-profissional: injeta a lista e ativa profissional_id no agendar.
+            profissionais = listar_profissionais(clinica["id"])
+            if profissionais:
+                system_completo += _formatar_profissionais_pro_prompt(profissionais)
+            ferramentas_disponiveis = _ferramentas_dono(bool(profissionais))
         executar_func = lambda nome, args: _executar_ferramenta_dono(nome, args, clinica)
     else:
         # Modo lead: prompt personalizado da clínica + ferramentas de agendamento
