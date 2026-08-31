@@ -1269,6 +1269,24 @@ def _formatar_config_horarios_pro_prompt(clinica_id):
     return txt
 
 
+# Detecta afirmação de que uma AÇÃO foi feita (agendar/remarcar/bloquear/registrar/
+# cancelar). Usado pra travar "confirmação-fantasma": a Ana dizer que fez sem ter
+# chamado a ferramenta. Cobre 1ª pessoa (agendei) e estado concluído (está agendada).
+_RE_ACAO_FEITA = re.compile(
+    r"\b(agendei|agendamos|remarquei|remarcamos|marquei|marcamos|"
+    r"bloqueei|bloqueamos|registrei|registramos|cancelei|cancelamos|reservei)\b"
+    r"|\b(est[áa]|foi|ficou|ficaram|foram|deixei|t[áa])\b\s+"
+    r"(agendad[oa]s?|marcad[oa]s?|remarcad[oa]s?|bloquead[oa]s?|registrad[oa]s?|cancelad[oa]s?|reservad[oa]s?)",
+    re.IGNORECASE,
+)
+
+
+def _texto_confirma_acao(texto):
+    """True se o texto AFIRMA que uma ação foi concluída (agendou/remarcou/bloqueou/
+    registrou/cancelou). Não pega futuro ("vou agendar") nem oferta ("quer agendar?")."""
+    return bool(_RE_ACAO_FEITA.search(texto or ""))
+
+
 def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
                      clinica=None, conversa_id=None, numero_lead=None,
                      modo_dono=False):
@@ -1329,6 +1347,8 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
     }
 
     agendamentos_criados = []
+    alguma_ferramenta_chamada = False
+    guard_confirmacao_usado = False
     for tentativa in range(5):
         payload = {
             "model": CLAUDE_MODEL,
@@ -1354,6 +1374,7 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
         content = data.get("content", [])
 
         if stop_reason == "tool_use":
+            alguma_ferramenta_chamada = True
             messages.append({"role": "assistant", "content": content})
 
             tool_results = []
@@ -1382,7 +1403,29 @@ def gerar_resposta_ia(system_prompt, historico, mensagem_atual,
             continue
 
         textos = [b["text"] for b in content if b.get("type") == "text"]
-        return ("\n".join(textos).strip(), agendamentos_criados, meta)
+        resposta = "\n".join(textos).strip()
+
+        # TRAVA anti-confirmação-fantasma (lead e dono): se a Ana AFIRMA que fez uma
+        # ação mas NÃO chamou nenhuma ferramenta no turno, nada foi salvo. Força a
+        # execução real (uma única vez) antes de deixar a resposta ir. Um agendamento
+        # de verdade SEMPRE passa por ferramenta, então isso só pega alucinação.
+        if (not alguma_ferramenta_chamada and not guard_confirmacao_usado
+                and _texto_confirma_acao(resposta)):
+            guard_confirmacao_usado = True
+            modo_label = "DONO" if modo_dono else "LEAD"
+            print(f"🛑 [{modo_label}] confirmação sem ferramenta — forçando execução: {resposta[:80]!r}")
+            messages.append({"role": "assistant", "content": resposta})
+            messages.append({"role": "user", "content": (
+                "[sistema] Você confirmou uma ação (agendar, remarcar, bloquear, "
+                "cancelar ou registrar venda), mas NÃO executou nenhuma ferramenta — "
+                "então NADA foi salvo no sistema e o que você disse está incorreto. "
+                "Execute AGORA a ferramenta correta com os dados que já tem. Se faltar "
+                "algum dado, pergunte em vez de confirmar. Nunca diga que fez algo "
+                "antes de a ferramenta retornar o ID."
+            )})
+            continue
+
+        return (resposta, agendamentos_criados, meta)
 
     print("⚠️ Loop de tool use excedeu 5 tentativas.")
     return None, agendamentos_criados, meta
