@@ -2621,6 +2621,12 @@ function clicarCelulaAgenda(event, dia, hora) {
 function abrirModalCriar(dia, hora) {
   const hh = String(hora).padStart(2,'0');
   const hhFim = String(Math.min(hora + 1, 23)).padStart(2,'0');
+  // Término padrão do agendamento = início + duração padrão da clínica.
+  const _p2 = n => String(n).padStart(2, '0');
+  const _durPad = (agendaConfig && agendaConfig.duracao_minutos) || 60;
+  const _iniDt = new Date(`${dia}T${hh}:00`);
+  const _fimDt = new Date(_iniDt.getTime() + _durPad * 60000);
+  const fimAgPadrao = `${_fimDt.getFullYear()}-${_p2(_fimDt.getMonth()+1)}-${_p2(_fimDt.getDate())}T${_p2(_fimDt.getHours())}:${_p2(_fimDt.getMinutes())}`;
   const temProfs = agendaProfissionais.length > 0;
   const filtroAtual = agendaFiltroProfId();
 
@@ -2655,10 +2661,10 @@ function abrirModalCriar(dia, hora) {
         <label>Telefone <span style="text-transform:none; font-weight:400">— opcional</span></label>
         <input type="text" id="novo-telefone" placeholder="(19) 99999-9999">
         ${selAgProf}
-        <label>Data e horário</label>
+        <label>Início</label>
         <input type="datetime-local" id="novo-datahora" value="${dia}T${hh}:00">
-        <label>Duração <span style="text-transform:none; font-weight:400">— minutos; vazio = padrão da clínica. Use pra procedimento longo (ex: cirurgia).</span></label>
-        <input type="number" id="novo-duracao" min="15" step="15" placeholder="Ex: 60 (padrão) ou 180 pra cirurgia">
+        <label>Término <span style="text-transform:none; font-weight:400">— ajuste pra procedimento longo (ex: cirurgia)</span></label>
+        <input type="datetime-local" id="novo-fim" value="${fimAgPadrao}">
         <label>Motivo <span style="text-transform:none; font-weight:400">— opcional</span></label>
         <input type="text" id="novo-motivo" placeholder="Ex: avaliação, clareamento...">
       </div>
@@ -2715,9 +2721,12 @@ async function salvarNovoAgenda() {
       observacao: document.getElementById('novo-motivo').value.trim(),
     };
     if (profEl && profEl.value) body.profissional_id = parseInt(profEl.value, 10);
-    const durEl = document.getElementById('novo-duracao');
-    const dur = durEl && durEl.value ? parseInt(durEl.value, 10) : null;
-    if (dur && dur > 0) body.duracao_minutos = dur;
+    const fimVal = document.getElementById('novo-fim').value;
+    if (fimVal) {
+      const durMin = Math.round((new Date(fimVal) - new Date(dataHora)) / 60000);
+      if (durMin <= 0) { alert('O término precisa ser depois do início.'); return; }
+      body.duracao_minutos = durMin;
+    }
   } else {
     const inicio = document.getElementById('novo-bloq-inicio').value;
     const fim = document.getElementById('novo-bloq-fim').value;
