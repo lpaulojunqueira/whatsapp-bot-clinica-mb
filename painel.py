@@ -1111,6 +1111,8 @@ PAINEL_HTML = """
               onclick="trocarView('conversas')">Conversas</button>
       <button type="button" class="aba-principal" data-view="agenda"
               onclick="trocarView('agenda')">Agenda</button>
+      <button type="button" class="aba-principal" data-view="campanhas"
+              onclick="trocarView('campanhas')">Campanhas</button>
     </nav>
     <div class="header-user">
       <div class="user-info">
@@ -1333,6 +1335,75 @@ PAINEL_HTML = """
     <div id="kanban-board" style="flex:1; overflow:auto; padding:20px;">
       <div style="padding:40px; text-align:center; color:var(--cinza-fraco);">
         {% if eh_admin %}Selecione um cliente pra ver o pipeline.{% else %}Carregando...{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="main view-campanhas" id="view-campanhas" style="display:none; overflow:auto;">
+    <div style="flex:1; padding:24px; max-width:760px; margin:0 auto; width:100%;">
+      <div style="margin-bottom:18px;">
+        <div style="font-size:20px; font-weight:700; color:var(--carvao);">Campanhas</div>
+        <div style="font-size:13px; color:var(--cinza-texto);">
+          Reative a base pelo estágio do funil (dados do Kanban). Escolha o público, escreva a
+          mensagem e veja quantos contatos alcança com o orçamento — antes de disparar.
+        </div>
+      </div>
+
+      {% if eh_admin %}
+      <label style="font-size:12px; font-weight:600; color:var(--cinza-fraco);">Cliente</label>
+      <select id="camp-cliente" onchange="camparEstimar()"
+              style="width:100%; padding:8px 10px; margin:6px 0 16px; border:1.5px solid var(--cinza-borda);
+                     border-radius:8px; font-family:inherit; font-size:14px; font-weight:600; color:var(--carvao); background:#fff;">
+        <option value="">Selecione um cliente</option>
+      </select>
+      {% endif %}
+
+      <div class="card" style="padding:20px;">
+        <label style="font-size:13px; font-weight:600;">Público (estágio do funil)</label>
+        <select id="camp-etapa" onchange="camparEstimar()"
+                style="width:100%; padding:9px 10px; margin:6px 0 14px; border:1.5px solid var(--cinza-borda);
+                       border-radius:8px; font-family:inherit; font-size:14px; background:#fff;">
+          <option value="novo">Novos — entraram mas não engajaram</option>
+          <option value="atendimento" selected>Em atendimento — engajaram mas não agendaram</option>
+          <option value="agendado">Agendados — marcaram mas não compraram</option>
+          <option value="comprou">Compraram — clientes (reengajamento)</option>
+        </select>
+
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:150px;">
+            <label style="font-size:13px; font-weight:600;">Período da base</label>
+            <select id="camp-dias" onchange="camparEstimar()"
+                    style="width:100%; padding:9px 10px; margin-top:6px; border:1.5px solid var(--cinza-borda);
+                           border-radius:8px; font-family:inherit; font-size:14px; background:#fff;">
+              <option value="30">Últimos 30 dias</option>
+              <option value="90" selected>Últimos 90 dias</option>
+              <option value="180">Últimos 180 dias</option>
+              <option value="365">Último ano</option>
+            </select>
+          </div>
+          <div style="flex:1; min-width:150px;">
+            <label style="font-size:13px; font-weight:600;">Orçamento (R$)</label>
+            <input type="number" id="camp-orcamento" min="0" step="10" value="100" oninput="camparEstimar()"
+                   style="width:100%; padding:9px 10px; margin-top:6px; border:1.5px solid var(--cinza-borda);
+                          border-radius:8px; font-family:inherit; font-size:14px;">
+          </div>
+        </div>
+
+        <div id="camp-estimativa" style="margin-top:16px;"></div>
+
+        <label style="font-size:13px; font-weight:600; display:block; margin-top:16px;">Mensagem</label>
+        <textarea id="camp-msg" placeholder="Ex: Oi! Vi que você chegou a falar com a gente sobre um tratamento e acabamos não conseguindo marcar. Quer que eu veja um horário pra você essa semana?"
+                  style="width:100%; min-height:90px; padding:10px; margin-top:6px; border:1.5px solid var(--cinza-borda);
+                         border-radius:8px; font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+
+        <button type="button" class="btn btn-verde" style="margin-top:16px; opacity:.6; cursor:not-allowed;"
+                title="Disponível na próxima fase" disabled>
+          Criar campanha (em breve)
+        </button>
+        <div style="font-size:12px; color:var(--cinza-texto); margin-top:8px; line-height:1.5;">
+          O disparo real entra na próxima fase (depende de forma de pagamento na conta WhatsApp e
+          aprovação do template pela Meta). Por enquanto isso é o planejador de público e custo.
+        </div>
       </div>
     </div>
   </div>
@@ -1803,6 +1874,8 @@ function trocarView(nome) {
     (nome === 'resultados') ? '' : 'none';
   document.getElementById('view-kanban').style.display =
     (nome === 'kanban') ? '' : 'none';
+  document.getElementById('view-campanhas').style.display =
+    (nome === 'campanhas') ? '' : 'none';
 
   // Limpa classes de estado da outra view pra não contaminar o layout mobile
   if (nome === 'agenda') {
@@ -1818,6 +1891,73 @@ function trocarView(nome) {
     document.body.classList.remove('conversa-aberta');
     inicializarKanbanSePreciso();
   }
+  if (nome === 'campanhas') {
+    document.body.classList.remove('conversa-aberta');
+    inicializarCampanhasSePreciso();
+  }
+}
+
+// ============================================================
+// CAMPANHAS (planejador de público + custo; envio na Fase 2)
+// ============================================================
+let campanhasInicializado = false;
+
+function inicializarCampanhasSePreciso() {
+  if (campanhasInicializado) return;
+  campanhasInicializado = true;
+  const sel = document.getElementById('camp-cliente');
+  if (sel) {
+    fetch('/painel/admin/usuarios').then(r => r.ok ? r.json() : []).then(cs => {
+      sel.innerHTML = '<option value="">Selecione um cliente</option>' +
+        cs.map(c => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
+    }).catch(() => {});
+  } else {
+    camparEstimar();
+  }
+}
+
+let camparTimer = null;
+function camparEstimar() {
+  // Debounce (o orçamento dispara a cada tecla).
+  clearTimeout(camparTimer);
+  camparTimer = setTimeout(_camparEstimar, 300);
+}
+
+async function _camparEstimar() {
+  const alvo = document.getElementById('camp-estimativa');
+  const sel = document.getElementById('camp-cliente');
+  const clinicaId = sel ? (sel.value || null) : 'meu';
+  if (!clinicaId) {
+    alvo.innerHTML = '<div style="color:var(--cinza-fraco); font-size:13px;">Selecione um cliente pra estimar.</div>';
+    return;
+  }
+  const etapa = document.getElementById('camp-etapa').value;
+  const dias = document.getElementById('camp-dias').value;
+  const orc = document.getElementById('camp-orcamento').value;
+  const params = new URLSearchParams({ etapa, dias });
+  if (orc) params.set('orcamento', orc);
+  if (clinicaId !== 'meu') params.set('clinica_id', clinicaId);
+  const r = await fetch('/painel/api/campanhas/estimar?' + params);
+  if (!r.ok) { alvo.innerHTML = '<div class="alerta alerta-erro">Erro ao estimar.</div>'; return; }
+  const d = await r.json();
+  const cobre = d.orcamento && d.alcance < d.segmento;
+  alvo.innerHTML = `
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      <div class="res-card" style="flex:1; min-width:130px;">
+        <div class="rotulo">Contatos no segmento</div>
+        <div class="valor">${d.segmento}</div>
+      </div>
+      <div class="res-card" style="flex:1; min-width:130px;">
+        <div class="rotulo">Alcance com o orçamento</div>
+        <div class="valor" style="color:var(--verde-escuro)">${d.alcance}</div>
+        <div class="sub">custo estimado ${fmtBRL(d.custo_total)}</div>
+      </div>
+    </div>
+    <div style="font-size:12px; color:var(--cinza-texto); margin-top:8px; line-height:1.5;">
+      ~${fmtBRL(d.custo_msg)} por mensagem (marketing, estimativa — confirme no Billing Hub da Meta).
+      ${cobre ? 'O orçamento não cobre todo o segmento; alcança os ' + d.alcance + ' mais recentes.'
+              : 'O orçamento cobre todo o segmento.'}
+    </div>`;
 }
 
 // ============================================================
