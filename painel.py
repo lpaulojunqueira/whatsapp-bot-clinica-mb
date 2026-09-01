@@ -60,6 +60,7 @@ from db import (
     dashboard_conversas_por_dia,
     dashboard_capi_resumo,
     kanban_leads,
+    estimar_campanha,
     semear_demo,
     limpar_demo,
     importar_agendamentos,
@@ -4175,6 +4176,32 @@ def registrar_rotas(app):
         except (TypeError, ValueError):
             dias = 30
         return jsonify({"leads": kanban_leads(clinica_id, dias)})
+
+    @app.route("/painel/api/campanhas/estimar", methods=["GET"])
+    @login_required
+    def api_campanha_estimar():
+        """Estima alcance + custo de uma campanha pelo público do Kanban. NÃO envia."""
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None:
+            clinica_id = clinica_sessao
+        else:
+            cid = request.args.get("clinica_id")
+            if not cid or not str(cid).isdigit():
+                return jsonify({"erro": "clinica_id obrigatório pra admin"}), 400
+            clinica_id = int(cid)
+        etapa = request.args.get("etapa") or "atendimento"
+        if etapa not in ("novo", "atendimento", "agendado", "comprou"):
+            return jsonify({"erro": "etapa inválida"}), 400
+        try:
+            dias = min(max(int(request.args.get("dias") or 90), 1), 365)
+        except (TypeError, ValueError):
+            dias = 90
+        orc = request.args.get("orcamento")
+        try:
+            orcamento = float(orc) if orc else None
+        except (TypeError, ValueError):
+            orcamento = None
+        return jsonify(estimar_campanha(clinica_id, etapa, dias, orcamento))
 
     @app.route("/painel/api/agenda/importar/preview", methods=["POST"])
     @login_required

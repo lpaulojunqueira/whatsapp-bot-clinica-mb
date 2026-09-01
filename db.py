@@ -871,6 +871,7 @@ def kanban_leads(clinica_id, dias=30, limite=300):
     cur.execute(
         """
         SELECT c.id AS conversa_id, c.numero_lead, c.criada_em, c.ctwa_clid,
+               COALESCE(c.followup_optout, FALSE) AS optout,
                COUNT(m.id) AS n_msgs,
                MAX(m.criada_em) AS ultima_msg,
                ag.nome_lead, ag.data_hora AS agend_data,
@@ -914,12 +915,54 @@ def kanban_leads(clinica_id, dias=30, limite=300):
             "nome": r["nome_lead"],
             "origem": "anúncio" if r["ctwa_clid"] else "direto",
             "etapa": etapa,
+            "optout": bool(r["optout"]),
             "n_msgs": r["n_msgs"] or 0,
             "ultima_msg": r["ultima_msg"].isoformat() if r["ultima_msg"] else None,
             "agend_data": r["agend_data"].isoformat() if r["agend_data"] else None,
             "venda_valor": float(r["venda_valor"]) if r["venda_valor"] is not None else None,
         })
     return leads
+
+
+# Custo médio por mensagem de MARKETING no Brasil (R$). AJUSTÁVEL — a Meta mudou
+# pra cobrança por mensagem em 2025; conferir o valor real no Billing Hub da conta.
+CUSTO_MSG_MARKETING_BRL = 0.35
+
+
+def publico_campanha(clinica_id, etapa, dias=90):
+    """
+    Público de uma campanha: contatos numa etapa do Kanban (novo/atendimento/
+    agendado/comprou), EXCLUINDO quem deu opt-out e quem não tem número. Reusa a
+    derivação de etapa do Kanban. Retorna lista de {conversa_id, numero, nome}.
+    """
+    leads = kanban_leads(clinica_id, dias, limite=100000)
+    return [
+        {"conversa_id": l["conversa_id"], "numero": l["numero"], "nome": l["nome"]}
+        for l in leads
+        if l["etapa"] == etapa and not l["optout"] and l["numero"]
+    ]
+
+
+def estimar_campanha(clinica_id, etapa, dias=90, orcamento=None,
+                     custo_msg=CUSTO_MSG_MARKETING_BRL):
+    """
+    Estima o alcance de uma campanha. Se `orcamento` (R$) for passado, o alcance é
+    limitado a orcamento/custo_msg. Retorna dict com o tamanho do segmento, custo
+    por msg, alcance possível e custo total desse alcance.
+    """
+    total = len(publico_campanha(clinica_id, etapa, dias))
+    if orcamento and orcamento > 0 and custo_msg > 0:
+        cabe = int(orcamento // custo_msg)
+        alcance = min(total, cabe)
+    else:
+        alcance = total
+    return {
+        "segmento": total,
+        "custo_msg": round(custo_msg, 2),
+        "alcance": alcance,
+        "custo_total": round(alcance * custo_msg, 2),
+        "orcamento": orcamento,
+    }
 
 
 def dashboard_conversas_por_dia(clinica_id, data_inicio, data_fim):
