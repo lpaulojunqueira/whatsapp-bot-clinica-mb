@@ -85,6 +85,9 @@ def inicializar_banco():
         # Números extras reconhecidos como DONO (além do telefone_humano principal).
         # Um por linha/vírgula. Só afeta a detecção de modo dono, nada mais.
         ("telefones_humanos_extras", "TEXT"),
+        # Profissionais dividem a mesma sala: um agendamento ocupa a sala pra
+        # todos (bloqueios continuam pessoais). Default FALSE = agendas independentes.
+        ("sala_compartilhada", "BOOLEAN DEFAULT FALSE"),
     ]:
         cur.execute(f"ALTER TABLE clinicas ADD COLUMN IF NOT EXISTS {coluna} {tipo};")
 
@@ -1510,7 +1513,7 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
                      meta_test_event_code=None, meta_page_id=None,
                      followup_ativo=None, followup_lembrete_hora=None,
                      followup_template_lembrete=None, followup_template_frio=None,
-                     telefones_humanos_extras=None):
+                     telefones_humanos_extras=None, sala_compartilhada=None):
     """
     Atualiza apenas os campos passados (não-None) de uma clínica.
     Strings vazias viram None pra telefone/token/campos CAPI (opcionais).
@@ -1531,6 +1534,9 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
     if telefones_humanos_extras is not None:
         campos.append("telefones_humanos_extras = %s")
         valores.append((telefones_humanos_extras or "").strip() or None)
+    if sala_compartilhada is not None:
+        campos.append("sala_compartilhada = %s")
+        valores.append(bool(sala_compartilhada))
     if whatsapp_token is not None:
         campos.append("whatsapp_token = %s")
         valores.append((whatsapp_token or "").strip() or None)
@@ -1955,6 +1961,15 @@ def existe_conflito(clinica_id, data_hora_inicio, duracao_minutos,
     conn = _conectar()
     cur = conn.cursor()
 
+    # Sala compartilhada: se ligado, QUALQUER agendamento ocupa a sala e bloqueia
+    # todos os profissionais (recurso físico único). Bloqueios continuam PESSOAIS.
+    cur.execute(
+        "SELECT COALESCE(sala_compartilhada, FALSE) FROM clinicas WHERE id = %s",
+        (clinica_id,)
+    )
+    row_sc = cur.fetchone()
+    sala_compartilhada = bool(row_sc[0]) if row_sc else False
+
     # 1) Conflito com outros agendamentos
     sql_ag = """
         SELECT 1 FROM agendamentos
@@ -1964,9 +1979,10 @@ def existe_conflito(clinica_id, data_hora_inicio, duracao_minutos,
           AND data_hora + (duracao_minutos || ' minutes')::interval > %s
     """
     params = [clinica_id, fim, data_hora_inicio]
-    if profissional_id is not None:
-        # Conflita com a agenda desse profissional E com agendamentos sem
-        # profissional definido (legado/manual = "cadeira ocupada", bloqueia todos).
+    if profissional_id is not None and not sala_compartilhada:
+        # Modo salas separadas: conflita só com a agenda desse profissional E com
+        # agendamentos sem profissional (legado/manual = "cadeira ocupada"). Se a
+        # sala é compartilhada, não filtra: qualquer agendamento ocupa a sala.
         sql_ag += " AND (profissional_id = %s OR profissional_id IS NULL)"
         params.append(profissional_id)
     if ignorar_id is not None:
@@ -2281,9 +2297,17 @@ def obter_horarios_disponiveis(clinica_id, data, profissional_id=None):
     )
 
     # Busca agendamentos do dia em uma query.
-    # Modo multi (profissional_id preenchido): só a agenda desse profissional.
     conn = _conectar()
     cur = conn.cursor()
+
+    # Sala compartilhada: agendamento de qualquer profissional ocupa a sala.
+    cur.execute(
+        "SELECT COALESCE(sala_compartilhada, FALSE) FROM clinicas WHERE id = %s",
+        (clinica_id,)
+    )
+    row_sc = cur.fetchone()
+    sala_compartilhada = bool(row_sc[0]) if row_sc else False
+
     sql_ocup = """
         SELECT data_hora, duracao_minutos FROM agendamentos
         WHERE clinica_id = %s
@@ -2292,8 +2316,9 @@ def obter_horarios_disponiveis(clinica_id, data, profissional_id=None):
     """
     params_ocup = [clinica_id, inicio_dia - timedelta(hours=4),
                    fim_dia + timedelta(hours=4)]
-    if profissional_id is not None:
-        # Agenda do profissional + agendamentos sem profissional (bloqueiam todos).
+    if profissional_id is not None and not sala_compartilhada:
+        # Salas separadas: só a agenda desse profissional + agendamentos sem
+        # profissional. Sala compartilhada: não filtra (qualquer um ocupa a sala).
         sql_ocup += " AND (profissional_id = %s OR profissional_id IS NULL)"
         params_ocup.append(profissional_id)
     cur.execute(sql_ocup, tuple(params_ocup))

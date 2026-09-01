@@ -757,14 +757,24 @@ FERRAMENTAS_DONO = [
         "name": "agendar_paciente_manual",
         "description": (
             "Registra um agendamento que veio por outro canal (telefone, walk-in). "
-            "Use quando o dono falar 'marquei X pra tal dia/hora'."
+            "Use quando o dono falar 'marquei X pra tal dia/hora'. Se o dono disser "
+            "a duração ou o horário de término (ex: cirurgia das 11h às 14h), passe "
+            "data_hora_fim — o horário fica reservado pelo período inteiro."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "data_hora": {
                     "type": "string",
-                    "description": "Data e hora do agendamento, formato AAAA-MM-DDTHH:MM."
+                    "description": "Início do agendamento, formato AAAA-MM-DDTHH:MM."
+                },
+                "data_hora_fim": {
+                    "type": "string",
+                    "description": (
+                        "Fim do agendamento, formato AAAA-MM-DDTHH:MM. Opcional — "
+                        "passe quando a duração não for a padrão (ex: cirurgia longa). "
+                        "Sem isso, usa a duração padrão da clínica."
+                    )
                 },
                 "nome_paciente": {
                     "type": "string",
@@ -1173,6 +1183,18 @@ def _executar_ferramenta_dono(nome, args, clinica):
         telefone = (args.get("telefone_paciente") or "").strip()
         observacao = args.get("observacao") or "Agendado manualmente pelo responsável"
 
+        # Duração customizada (ex: cirurgia longa). Sem data_hora_fim, usa o padrão.
+        duracao = None
+        fim_str = (args.get("data_hora_fim") or "").strip()
+        if fim_str:
+            try:
+                dt_fim = datetime.strptime(fim_str, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+            except ValueError:
+                return "Erro: formato do horário de fim inválido (use AAAA-MM-DDTHH:MM).", extra
+            duracao = int((dt_fim - dt).total_seconds() // 60)
+            if duracao <= 0:
+                return "Erro: o fim precisa ser depois do início.", extra
+
         # Multi-profissional: valida/pega o profissional_id (None em clínica single).
         pid, erro_prof = _resolver_profissional_lead(args, clinica)
         if erro_prof:
@@ -1183,15 +1205,17 @@ def _executar_ferramenta_dono(nome, args, clinica):
                 clinica_id=clinica["id"],
                 numero_lead=telefone or "manual",
                 data_hora=dt,
+                duracao_minutos=duracao,
                 nome_lead=nome_paciente,
                 origem="manual",
                 observacao=observacao,
                 profissional_id=pid,
             )
             extra["agendamento_criado_id"] = ag_id
+            janela = f" até {dt_fim.strftime('%H:%M')}" if duracao else ""
             return (
                 f"Agendamento #{ag_id} registrado: "
-                f"{nome_paciente} em {dt.strftime('%d/%m às %H:%M')}. "
+                f"{nome_paciente} em {dt.strftime('%d/%m às %H:%M')}{janela}. "
                 f"{'Telefone: ' + telefone if telefone else 'Sem telefone.'}"
             ), extra
         except ValueError as e:

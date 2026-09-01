@@ -2657,6 +2657,8 @@ function abrirModalCriar(dia, hora) {
         ${selAgProf}
         <label>Data e horário</label>
         <input type="datetime-local" id="novo-datahora" value="${dia}T${hh}:00">
+        <label>Duração <span style="text-transform:none; font-weight:400">— minutos; vazio = padrão da clínica. Use pra procedimento longo (ex: cirurgia).</span></label>
+        <input type="number" id="novo-duracao" min="15" step="15" placeholder="Ex: 60 (padrão) ou 180 pra cirurgia">
         <label>Motivo <span style="text-transform:none; font-weight:400">— opcional</span></label>
         <input type="text" id="novo-motivo" placeholder="Ex: avaliação, clareamento...">
       </div>
@@ -2713,6 +2715,9 @@ async function salvarNovoAgenda() {
       observacao: document.getElementById('novo-motivo').value.trim(),
     };
     if (profEl && profEl.value) body.profissional_id = parseInt(profEl.value, 10);
+    const durEl = document.getElementById('novo-duracao');
+    const dur = durEl && durEl.value ? parseInt(durEl.value, 10) : null;
+    if (dur && dur > 0) body.duracao_minutos = dur;
   } else {
     const inicio = document.getElementById('novo-bloq-inicio').value;
     const fim = document.getElementById('novo-bloq-fim').value;
@@ -3405,6 +3410,16 @@ ADMIN_HTML = """
       <label>Telefones humanos adicionais <span class="label-dica">— opcional; um por linha. Também são reconhecidos como dono (ajustar agenda, contabilizar venda). NÃO recebem notificação.</span></label>
       <textarea id="ed-fones-extras" style="min-height:70px" placeholder="Ex: cada profissional num número, um por linha"></textarea>
 
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:6px;">
+        <input type="checkbox" id="ed-sala-compartilhada" style="width:auto; margin:0;">
+        Profissionais compartilham a mesma sala
+      </label>
+      <div class="card-sub" style="margin-top:2px;">
+        Ligue se os profissionais dividem o mesmo espaço físico: um agendamento passa
+        a ocupar a sala pra TODOS (a Ana não marca dois no mesmo horário). Bloqueios
+        continuam pessoais. Só faz diferença em clínica com mais de um profissional.
+      </div>
+
       <label>Prompt da Ana</label>
       <textarea id="ed-prompt" style="min-height:200px"></textarea>
 
@@ -3740,6 +3755,7 @@ async function abrirEdicaoCliente(clinicaId) {
   document.getElementById('ed-token').value = c.whatsapp_token || '';
   document.getElementById('ed-fone-humano').value = c.telefone_humano || '';
   document.getElementById('ed-fones-extras').value = c.telefones_humanos_extras || '';
+  document.getElementById('ed-sala-compartilhada').checked = !!c.sala_compartilhada;
   document.getElementById('ed-prompt').value = c.system_prompt || '';
   // Rastreamento Meta. O token NÃO é pré-preenchido (fica em branco = mantém o atual).
   document.getElementById('ed-meta-dataset').value = c.meta_dataset_id || '';
@@ -3768,6 +3784,7 @@ async function salvarEdicaoCliente(e) {
     whatsapp_token: document.getElementById('ed-token').value.trim(),
     telefone_humano: document.getElementById('ed-fone-humano').value.trim(),
     telefones_humanos_extras: document.getElementById('ed-fones-extras').value.trim(),
+    sala_compartilhada: document.getElementById('ed-sala-compartilhada').checked,
     system_prompt: document.getElementById('ed-prompt').value.trim(),
     meta_dataset_id: document.getElementById('ed-meta-dataset').value.trim(),
     meta_page_id: document.getElementById('ed-meta-pageid').value.trim(),
@@ -4493,6 +4510,7 @@ def registrar_rotas(app):
                 phone_number_id=body.get("phone_number_id"),
                 telefone_humano=body.get("telefone_humano"),
                 telefones_humanos_extras=body.get("telefones_humanos_extras"),
+                sala_compartilhada=body.get("sala_compartilhada"),
                 whatsapp_token=body.get("whatsapp_token"),
                 system_prompt=body.get("system_prompt"),
                 meta_dataset_id=body.get("meta_dataset_id"),
@@ -4906,10 +4924,17 @@ def registrar_rotas(app):
         telefone = (body.get("telefone") or "").strip()
         observacao = (body.get("observacao") or "").strip() or None
         try:
+            duracao = int(body.get("duracao_minutos"))
+            if duracao <= 0:
+                duracao = None
+        except (TypeError, ValueError):
+            duracao = None
+        try:
             ag_id = criar_agendamento(
                 clinica_id=clinica_id,
                 numero_lead=telefone or "manual",
                 data_hora=dt,
+                duracao_minutos=duracao,
                 nome_lead=nome,
                 origem="manual",
                 observacao=observacao,
