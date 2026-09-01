@@ -61,12 +61,17 @@ from db import (
     dashboard_capi_resumo,
     kanban_leads,
     estimar_campanha,
+    criar_campanha,
+    atualizar_status_campanha,
+    obter_campanha,
+    listar_campanhas,
     semear_demo,
     limpar_demo,
     importar_agendamentos,
 )
 import capi
 import importacao
+import campanhas_meta
 
 
 # ============================================================
@@ -1351,7 +1356,7 @@ PAINEL_HTML = """
 
       {% if eh_admin %}
       <label style="font-size:12px; font-weight:600; color:var(--cinza-fraco);">Cliente</label>
-      <select id="camp-cliente" onchange="camparEstimar()"
+      <select id="camp-cliente" onchange="camparTrocarCliente()"
               style="width:100%; padding:8px 10px; margin:6px 0 16px; border:1.5px solid var(--cinza-borda);
                      border-radius:8px; font-family:inherit; font-size:14px; font-weight:600; color:var(--carvao); background:#fff;">
         <option value="">Selecione um cliente</option>
@@ -1396,15 +1401,17 @@ PAINEL_HTML = """
                   style="width:100%; min-height:90px; padding:10px; margin-top:6px; border:1.5px solid var(--cinza-borda);
                          border-radius:8px; font-family:inherit; font-size:14px; resize:vertical;"></textarea>
 
-        <button type="button" class="btn btn-verde" style="margin-top:16px; opacity:.6; cursor:not-allowed;"
-                title="Disponível na próxima fase" disabled>
-          Criar campanha (em breve)
+        <button type="button" class="btn btn-verde" style="margin-top:16px;" onclick="criarCampanha()">
+          Criar campanha
         </button>
         <div style="font-size:12px; color:var(--cinza-texto); margin-top:8px; line-height:1.5;">
-          O disparo real entra na próxima fase (depende de forma de pagamento na conta WhatsApp e
-          aprovação do template pela Meta). Por enquanto isso é o planejador de público e custo.
+          Isso cria o template e envia pra <strong>aprovação da Meta</strong> (leva de minutos a algumas horas).
+          NÃO dispara nenhuma mensagem ainda — o envio de fato é a próxima etapa, só depois de aprovado.
         </div>
+        <div id="camp-resultado" style="margin-top:12px;"></div>
       </div>
+
+      <div id="camp-lista" style="margin-top:20px;"></div>
     </div>
   </div>
 
@@ -1913,7 +1920,18 @@ function inicializarCampanhasSePreciso() {
     }).catch(() => {});
   } else {
     camparEstimar();
+    carregarCampanhas();
   }
+}
+
+function campClinicaId() {
+  const sel = document.getElementById('camp-cliente');
+  return sel ? (sel.value || null) : 'meu';
+}
+
+function camparTrocarCliente() {
+  camparEstimar();
+  carregarCampanhas();
 }
 
 let camparTimer = null;
@@ -1958,6 +1976,79 @@ async function _camparEstimar() {
       ${cobre ? 'O orçamento não cobre todo o segmento; alcança os ' + d.alcance + ' mais recentes.'
               : 'O orçamento cobre todo o segmento.'}
     </div>`;
+}
+
+const CAMP_STATUS = {
+  rascunho: { t: 'Rascunho', c: '#9CA3AF' },
+  em_aprovacao: { t: 'Em aprovação (Meta)', c: '#F59E0B' },
+  aprovado: { t: 'Aprovado', c: '#1FBE82' },
+  reprovado: { t: 'Reprovado', c: '#EF4444' },
+  enviando: { t: 'Enviando', c: '#3B82F6' },
+  concluida: { t: 'Concluída', c: '#1FBE82' },
+  erro: { t: 'Erro', c: '#EF4444' },
+};
+
+async function criarCampanha() {
+  const clinicaId = campClinicaId();
+  const res = document.getElementById('camp-resultado');
+  if (!clinicaId) { alert('Selecione um cliente.'); return; }
+  const mensagem = document.getElementById('camp-msg').value.trim();
+  if (mensagem.length < 3) { alert('Escreva a mensagem da campanha.'); return; }
+  if (!confirm('Isso cria o template e envia pra aprovação da Meta. NENHUMA mensagem é disparada agora. Continuar?')) return;
+  res.innerHTML = '<div style="color:var(--cinza-fraco); font-size:13px;">Enviando o template pra aprovação...</div>';
+  const body = {
+    etapa: document.getElementById('camp-etapa').value,
+    dias: document.getElementById('camp-dias').value,
+    orcamento: document.getElementById('camp-orcamento').value || null,
+    mensagem,
+  };
+  if (clinicaId !== 'meu') body.clinica_id = clinicaId;
+  const r = await fetch('/painel/api/campanhas', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { res.innerHTML = '<div class="alerta alerta-erro">Erro: ' + escapar(d.erro || 'falha') + '</div>'; return; }
+  res.innerHTML = '<div class="alerta alerta-sucesso">Campanha criada. Template <strong>em aprovação na Meta</strong> — acompanhe abaixo. Alcance previsto: ' + (d.alcance || 0) + ' contatos.</div>';
+  document.getElementById('camp-msg').value = '';
+  carregarCampanhas();
+}
+
+async function carregarCampanhas() {
+  const clinicaId = campClinicaId();
+  const alvo = document.getElementById('camp-lista');
+  if (!clinicaId) { alvo.innerHTML = ''; return; }
+  const params = new URLSearchParams();
+  if (clinicaId !== 'meu') params.set('clinica_id', clinicaId);
+  const r = await fetch('/painel/api/campanhas?' + params);
+  if (!r.ok) { alvo.innerHTML = ''; return; }
+  const d = await r.json();
+  const cs = d.campanhas || [];
+  if (!cs.length) { alvo.innerHTML = ''; return; }
+  const etapaNome = { novo: 'Novos', atendimento: 'Em atendimento', agendado: 'Agendados', comprou: 'Compraram' };
+  alvo.innerHTML = '<div style="font-weight:700; color:var(--carvao); margin-bottom:10px;">Suas campanhas</div>' +
+    cs.map(c => {
+      const st = CAMP_STATUS[c.template_status] || { t: c.template_status, c: '#9CA3AF' };
+      const pendente = c.template_status === 'em_aprovacao';
+      return `<div class="res-card" style="margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
+          <div>
+            <span style="display:inline-block; padding:2px 9px; border-radius:99px; font-size:11px; font-weight:700; color:#fff; background:${st.c};">${st.t}</span>
+            <span style="font-size:12px; color:var(--cinza-texto); margin-left:8px;">${etapaNome[c.etapa] || c.etapa} · ${c.alcance_alvo || 0} contatos</span>
+          </div>
+          ${pendente ? `<button class="btn btn-pequeno" onclick="atualizarStatusCampanha(${c.id})">Atualizar status</button>` : ''}
+        </div>
+        <div style="font-size:13px; color:var(--carvao); margin-top:8px; white-space:pre-wrap;">${escapar((c.mensagem || '').substring(0, 200))}</div>
+        ${c.template_status === 'reprovado' && c.template_motivo ? '<div style="font-size:12px; color:#EF4444; margin-top:6px;">Motivo Meta: ' + escapar(c.template_motivo) + '</div>' : ''}
+        ${c.template_status === 'aprovado' ? '<div style="font-size:12px; color:var(--verde-escuro); margin-top:6px;">Aprovado — o disparo entra na próxima etapa.</div>' : ''}
+      </div>`;
+    }).join('');
+}
+
+async function atualizarStatusCampanha(id) {
+  const r = await fetch('/painel/api/campanhas/' + id + '/status');
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert('Erro: ' + (d.erro || 'falha ao consultar a Meta')); return; }
+  carregarCampanhas();
 }
 
 // ============================================================
@@ -3570,6 +3661,9 @@ ADMIN_HTML = """
         continuam pessoais. Só faz diferença em clínica com mais de um profissional.
       </div>
 
+      <label>WABA ID <span class="label-dica">— ID da conta WhatsApp Business, pra campanhas (não é o do número)</span></label>
+      <input type="text" id="ed-waba-id" placeholder="Ex: 1705001477486312">
+
       <label>Prompt da Ana</label>
       <textarea id="ed-prompt" style="min-height:200px"></textarea>
 
@@ -3906,6 +4000,7 @@ async function abrirEdicaoCliente(clinicaId) {
   document.getElementById('ed-fone-humano').value = c.telefone_humano || '';
   document.getElementById('ed-fones-extras').value = c.telefones_humanos_extras || '';
   document.getElementById('ed-sala-compartilhada').checked = !!c.sala_compartilhada;
+  document.getElementById('ed-waba-id').value = c.waba_id || '';
   document.getElementById('ed-prompt').value = c.system_prompt || '';
   // Rastreamento Meta. O token NÃO é pré-preenchido (fica em branco = mantém o atual).
   document.getElementById('ed-meta-dataset').value = c.meta_dataset_id || '';
@@ -3935,6 +4030,7 @@ async function salvarEdicaoCliente(e) {
     telefone_humano: document.getElementById('ed-fone-humano').value.trim(),
     telefones_humanos_extras: document.getElementById('ed-fones-extras').value.trim(),
     sala_compartilhada: document.getElementById('ed-sala-compartilhada').checked,
+    waba_id: document.getElementById('ed-waba-id').value.trim(),
     system_prompt: document.getElementById('ed-prompt').value.trim(),
     meta_dataset_id: document.getElementById('ed-meta-dataset').value.trim(),
     meta_page_id: document.getElementById('ed-meta-pageid').value.trim(),
@@ -4343,6 +4439,93 @@ def registrar_rotas(app):
             orcamento = None
         return jsonify(estimar_campanha(clinica_id, etapa, dias, orcamento))
 
+    def _campanha_clinica_alvo(fonte):
+        """Resolve a clínica: cliente comum usa a sessão; admin passa clinica_id."""
+        clinica_sessao = session.get("clinica_id")
+        if clinica_sessao is not None:
+            return clinica_sessao, None
+        cid = fonte.get("clinica_id")
+        if not cid or not str(cid).isdigit():
+            return None, (jsonify({"erro": "clinica_id obrigatório pra admin"}), 400)
+        return int(cid), None
+
+    @app.route("/painel/api/campanhas", methods=["POST"])
+    @login_required
+    def api_campanha_criar():
+        """Cria a campanha e SUBMETE o template pra aprovação da Meta. NÃO envia msg."""
+        body = request.get_json() or {}
+        clinica_id, erro = _campanha_clinica_alvo(body)
+        if erro:
+            return erro
+        etapa = body.get("etapa") or ""
+        if etapa not in ("novo", "atendimento", "agendado", "comprou"):
+            return jsonify({"erro": "etapa inválida"}), 400
+        try:
+            dias = min(max(int(body.get("dias") or 90), 1), 365)
+        except (TypeError, ValueError):
+            dias = 90
+        mensagem = (body.get("mensagem") or "").strip()
+        if len(mensagem) < 3:
+            return jsonify({"erro": "escreva a mensagem da campanha"}), 400
+        try:
+            orcamento = float(body.get("orcamento")) if body.get("orcamento") else None
+        except (TypeError, ValueError):
+            orcamento = None
+
+        clinica = obter_clinica(clinica_id)
+        if not clinica:
+            return jsonify({"erro": "clínica não encontrada"}), 404
+        if not clinica.get("waba_id"):
+            return jsonify({"erro": "clínica sem WABA ID configurado (Admin → editar cliente)"}), 400
+        token = clinica.get("whatsapp_token")
+        if not token:
+            return jsonify({"erro": "clínica sem token do WhatsApp configurado"}), 400
+
+        est = estimar_campanha(clinica_id, etapa, dias, orcamento)
+        nome = campanhas_meta.gerar_nome_template(clinica_id)
+        ok, status, detalhe = campanhas_meta.submeter_template(
+            clinica["waba_id"], token, nome, mensagem
+        )
+        if not ok:
+            return jsonify({"erro": detalhe.get("erro", "falha ao criar o template na Meta")}), 400
+        camp_id = criar_campanha(clinica_id, etapa, dias, mensagem, orcamento,
+                                 est["alcance"], nome, status)
+        return jsonify({"id": camp_id, "status": status, "template_nome": nome,
+                        "alcance": est["alcance"]})
+
+    @app.route("/painel/api/campanhas", methods=["GET"])
+    @login_required
+    def api_campanhas_listar():
+        clinica_id, erro = _campanha_clinica_alvo(request.args)
+        if erro:
+            return erro
+        rows = listar_campanhas(clinica_id)
+        for r in rows:
+            for c in ("criado_em", "atualizada_em"):
+                if r.get(c):
+                    r[c] = r[c].isoformat()
+            if r.get("orcamento") is not None:
+                r["orcamento"] = float(r["orcamento"])
+        return jsonify({"campanhas": rows})
+
+    @app.route("/painel/api/campanhas/<int:camp_id>/status", methods=["GET"])
+    @login_required
+    def api_campanha_status(camp_id):
+        camp = obter_campanha(camp_id)
+        if not camp:
+            return jsonify({"erro": "campanha não encontrada"}), 404
+        if session.get("clinica_id") is not None and camp["clinica_id"] != session["clinica_id"]:
+            return jsonify({"erro": "sem permissão"}), 403
+        clinica = obter_clinica(camp["clinica_id"])
+        ok, status, detalhe = campanhas_meta.consultar_status_template(
+            clinica.get("waba_id"), clinica.get("whatsapp_token"), camp["template_nome"]
+        )
+        if not ok:
+            return jsonify({"erro": detalhe.get("erro", "falha ao consultar")}), 400
+        motivo = detalhe.get("meta_status") if status == "reprovado" else None
+        atualizar_status_campanha(camp_id, status, motivo)
+        return jsonify({"status": status, "meta_status": detalhe.get("meta_status")})
+
     @app.route("/painel/api/agenda/importar/preview", methods=["POST"])
     @login_required
     def api_importar_preview():
@@ -4687,6 +4870,7 @@ def registrar_rotas(app):
                 telefone_humano=body.get("telefone_humano"),
                 telefones_humanos_extras=body.get("telefones_humanos_extras"),
                 sala_compartilhada=body.get("sala_compartilhada"),
+                waba_id=body.get("waba_id"),
                 whatsapp_token=body.get("whatsapp_token"),
                 system_prompt=body.get("system_prompt"),
                 meta_dataset_id=body.get("meta_dataset_id"),

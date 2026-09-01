@@ -88,6 +88,9 @@ def inicializar_banco():
         # Profissionais dividem a mesma sala: um agendamento ocupa a sala pra
         # todos (bloqueios continuam pessoais). Default FALSE = agendas independentes.
         ("sala_compartilhada", "BOOLEAN DEFAULT FALSE"),
+        # ID da conta WhatsApp Business (WABA) — necessário pra criar templates de
+        # campanha via API de gerenciamento da Meta. Diferente do phone_number_id.
+        ("waba_id", "TEXT"),
     ]:
         cur.execute(f"ALTER TABLE clinicas ADD COLUMN IF NOT EXISTS {coluna} {tipo};")
 
@@ -336,6 +339,25 @@ def inicializar_banco():
     """)
     # Bancos que já criaram a tabela com NOT NULL: libera a venda avulsa.
     cur.execute("ALTER TABLE vendas ALTER COLUMN conversa_id DROP NOT NULL;")
+
+    # Campanhas de disparo em massa (template WhatsApp). template_status:
+    # rascunho | em_aprovacao | aprovado | reprovado | enviando | concluida | erro.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS campanhas (
+            id SERIAL PRIMARY KEY,
+            clinica_id INT NOT NULL REFERENCES clinicas(id),
+            etapa TEXT NOT NULL,
+            dias INT NOT NULL DEFAULT 90,
+            mensagem TEXT NOT NULL,
+            template_nome TEXT,
+            template_status TEXT NOT NULL DEFAULT 'rascunho',
+            template_motivo TEXT,
+            orcamento NUMERIC(12,2),
+            alcance_alvo INT,
+            criado_em TIMESTAMPTZ DEFAULT NOW(),
+            atualizada_em TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
 
     conn.commit()
     cur.close()
@@ -965,6 +987,63 @@ def estimar_campanha(clinica_id, etapa, dias=90, orcamento=None,
     }
 
 
+def criar_campanha(clinica_id, etapa, dias, mensagem, orcamento, alcance_alvo,
+                   template_nome, template_status="em_aprovacao"):
+    """Salva uma campanha. Retorna o id."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO campanhas
+             (clinica_id, etapa, dias, mensagem, template_nome, template_status,
+              orcamento, alcance_alvo)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (clinica_id, etapa, int(dias), mensagem, template_nome, template_status,
+         orcamento, alcance_alvo)
+    )
+    cid = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return cid
+
+
+def atualizar_status_campanha(campanha_id, status, motivo=None):
+    """Atualiza o status do template/campanha (e o motivo, se reprovado)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE campanhas SET template_status = %s, template_motivo = %s,
+               atualizada_em = NOW() WHERE id = %s""",
+        (status, motivo, campanha_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def obter_campanha(campanha_id):
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM campanhas WHERE id = %s", (campanha_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def listar_campanhas(clinica_id):
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        "SELECT * FROM campanhas WHERE clinica_id = %s ORDER BY criado_em DESC LIMIT 50",
+        (clinica_id,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
 def dashboard_conversas_por_dia(clinica_id, data_inicio, data_fim):
     """Conversas iniciadas por dia (fuso Brasília) no período — pro gráfico."""
     conn = _conectar()
@@ -1556,7 +1635,8 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
                      meta_test_event_code=None, meta_page_id=None,
                      followup_ativo=None, followup_lembrete_hora=None,
                      followup_template_lembrete=None, followup_template_frio=None,
-                     telefones_humanos_extras=None, sala_compartilhada=None):
+                     telefones_humanos_extras=None, sala_compartilhada=None,
+                     waba_id=None):
     """
     Atualiza apenas os campos passados (não-None) de uma clínica.
     Strings vazias viram None pra telefone/token/campos CAPI (opcionais).
@@ -1580,6 +1660,9 @@ def atualizar_clinica(clinica_id, nome=None, phone_number_id=None,
     if sala_compartilhada is not None:
         campos.append("sala_compartilhada = %s")
         valores.append(bool(sala_compartilhada))
+    if waba_id is not None:
+        campos.append("waba_id = %s")
+        valores.append((waba_id or "").strip() or None)
     if whatsapp_token is not None:
         campos.append("whatsapp_token = %s")
         valores.append((whatsapp_token or "").strip() or None)
