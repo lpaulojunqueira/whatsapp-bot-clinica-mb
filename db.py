@@ -359,6 +359,21 @@ def inicializar_banco():
         );
     """)
 
+    # Envios de cada campanha (1 por contato). UNIQUE trava double-send mesmo com
+    # N workers/re-disparo. status: pendente | enviado | erro.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS campanha_envios (
+            id SERIAL PRIMARY KEY,
+            campanha_id INT NOT NULL REFERENCES campanhas(id),
+            conversa_id INT,
+            numero TEXT,
+            status TEXT NOT NULL DEFAULT 'pendente',
+            erro TEXT,
+            criado_em TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(campanha_id, conversa_id)
+        );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -1042,6 +1057,53 @@ def listar_campanhas(clinica_id):
     cur.close()
     conn.close()
     return rows
+
+
+def campanha_envio_claim(campanha_id, conversa_id, numero):
+    """Reserva o envio pra este contato. Retorna True se reservou (ainda não
+    enviado), False se já existia (evita duplicar mesmo com re-disparo/N workers)."""
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO campanha_envios (campanha_id, conversa_id, numero, status)
+           VALUES (%s, %s, %s, 'pendente')
+           ON CONFLICT (campanha_id, conversa_id) DO NOTHING RETURNING id""",
+        (campanha_id, conversa_id, numero)
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row is not None
+
+
+def campanha_envio_resultado(campanha_id, conversa_id, status, erro=None):
+    conn = _conectar()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE campanha_envios SET status = %s, erro = %s WHERE campanha_id = %s AND conversa_id = %s",
+        (status, (erro or None), campanha_id, conversa_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def campanha_contadores(campanha_id):
+    """Enviados / erros / total de um disparo."""
+    conn = _conectar()
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute(
+        """SELECT COUNT(*) FILTER (WHERE status = 'enviado') AS enviados,
+                  COUNT(*) FILTER (WHERE status = 'erro') AS erros,
+                  COUNT(*) AS total
+           FROM campanha_envios WHERE campanha_id = %s""",
+        (campanha_id,)
+    )
+    r = cur.fetchone()
+    cur.close()
+    conn.close()
+    return {"enviados": r["enviados"] or 0, "erros": r["erros"] or 0, "total": r["total"] or 0}
 
 
 def dashboard_conversas_por_dia(clinica_id, data_inicio, data_fim):

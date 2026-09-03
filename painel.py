@@ -11,6 +11,7 @@ Multi-tenant: admin (sem clinica_id) vê tudo; usuário comum vê só a clínica
 """
 
 import os
+import time
 import requests
 import threading
 from functools import wraps
@@ -65,6 +66,10 @@ from db import (
     atualizar_status_campanha,
     obter_campanha,
     listar_campanhas,
+    publico_campanha,
+    campanha_envio_claim,
+    campanha_envio_resultado,
+    campanha_contadores,
     semear_demo,
     limpar_demo,
     importar_agendamentos,
@@ -95,6 +100,46 @@ def admin_required(f):
             return jsonify({"erro": "apenas admin"}), 403
         return f(*args, **kwargs)
     return wrapper
+
+
+def _disparar_campanha_bg(campanha_id):
+    """
+    Motor de disparo da campanha (roda em thread). Envia o template aprovado pra
+    cada contato do público (respeitando o teto de alcance), com dedup por
+    campanha_envios, e GRAVA a mensagem no histórico de cada um (pro agente
+    responder no contexto). É AQUI que gasta — só roda via /disparar.
+    """
+    camp = obter_campanha(campanha_id)
+    if not camp or camp["template_status"] not in ("aprovado", "enviando"):
+        return
+    clinica = obter_clinica(camp["clinica_id"])
+    if not clinica:
+        return
+    token = clinica.get("whatsapp_token")
+    pnid = clinica.get("phone_number_id")
+    publico = publico_campanha(camp["clinica_id"], camp["etapa"], camp["dias"])
+    cap = camp["alcance_alvo"] or len(publico)
+    publico = publico[:cap]
+    atualizar_status_campanha(campanha_id, "enviando")
+    for c in publico:
+        # Trava: se já foi reservado/enviado, pula (evita duplicar em re-disparo).
+        if not campanha_envio_claim(campanha_id, c["conversa_id"], c["numero"]):
+            continue
+        ok, det = campanhas_meta.enviar_template_campanha(
+            pnid, token, c["numero"], camp["template_nome"]
+        )
+        if ok:
+            campanha_envio_resultado(campanha_id, c["conversa_id"], "enviado")
+            # Grava no histórico pra Ana responder no contexto quando o lead voltar.
+            try:
+                salvar_mensagem(c["conversa_id"], "assistant", camp["mensagem"])
+            except Exception:
+                pass
+        else:
+            campanha_envio_resultado(campanha_id, c["conversa_id"], "erro",
+                                     str(det.get("erro"))[:300])
+        time.sleep(0.3)  # pacing pra não estourar rate limit da Meta
+    atualizar_status_campanha(campanha_id, "concluida")
 
 
 # ============================================================
@@ -2029,17 +2074,34 @@ async function carregarCampanhas() {
     cs.map(c => {
       const st = CAMP_STATUS[c.template_status] || { t: c.template_status, c: '#9CA3AF' };
       const pendente = c.template_status === 'em_aprovacao';
+      const ct = c.contadores;
+      let acoes = '';
+      if (c.template_status === 'reprovado' && c.template_motivo) {
+        acoes = '<div style="font-size:12px; color:#EF4444; margin-top:8px;">Reprovado pela Meta: ' + escapar(c.template_motivo) + '. Ajuste o texto e crie outra.</div>';
+      } else if (c.template_status === 'aprovado') {
+        acoes = `
+          <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <input type="text" id="teste-${c.id}" placeholder="Seu número pra teste" style="flex:1; min-width:150px; padding:8px 10px; border:1.5px solid var(--cinza-borda); border-radius:8px; font-size:13px;">
+            <button class="btn btn-pequeno" onclick="testarCampanha(${c.id})">Enviar teste</button>
+          </div>
+          <button class="btn btn-verde" style="margin-top:10px;" onclick="dispararCampanha(${c.id}, ${c.alcance_alvo || 0})">Disparar pra ${c.alcance_alvo || 0} contatos</button>
+          <div style="font-size:11px; color:var(--cinza-texto); margin-top:6px;">Envie um teste pro seu número antes. O disparo gasta de verdade.</div>`;
+      } else if (c.template_status === 'enviando') {
+        acoes = `<div style="margin-top:8px; font-size:13px; color:#3B82F6;">Enviando… ${ct ? (ct.enviados + ' enviados · ' + ct.erros + ' erros') : ''}
+          <button class="btn btn-pequeno" style="margin-left:8px;" onclick="carregarCampanhas()">Atualizar</button></div>`;
+      } else if (c.template_status === 'concluida') {
+        acoes = `<div style="margin-top:8px; font-size:13px; color:var(--verde-escuro);">Concluída${ct ? ' — ' + ct.enviados + ' enviados · ' + ct.erros + ' erros' : ''}</div>`;
+      }
       return `<div class="res-card" style="margin-bottom:10px;">
         <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center;">
           <div>
             <span style="display:inline-block; padding:2px 9px; border-radius:99px; font-size:11px; font-weight:700; color:#fff; background:${st.c};">${st.t}</span>
-            <span style="font-size:12px; color:var(--cinza-texto); margin-left:8px;">${etapaNome[c.etapa] || c.etapa} · ${c.alcance_alvo || 0} contatos</span>
+            <span style="font-size:12px; color:var(--cinza-texto); margin-left:8px;">${etapaNome[c.etapa] || c.etapa} · alvo ${c.alcance_alvo || 0}</span>
           </div>
           ${pendente ? `<button class="btn btn-pequeno" onclick="atualizarStatusCampanha(${c.id})">Atualizar status</button>` : ''}
         </div>
         <div style="font-size:13px; color:var(--carvao); margin-top:8px; white-space:pre-wrap;">${escapar((c.mensagem || '').substring(0, 200))}</div>
-        ${c.template_status === 'reprovado' && c.template_motivo ? '<div style="font-size:12px; color:#EF4444; margin-top:6px;">Motivo Meta: ' + escapar(c.template_motivo) + '</div>' : ''}
-        ${c.template_status === 'aprovado' ? '<div style="font-size:12px; color:var(--verde-escuro); margin-top:6px;">Aprovado — o disparo entra na próxima etapa.</div>' : ''}
+        ${acoes}
       </div>`;
     }).join('');
 }
@@ -2049,6 +2111,27 @@ async function atualizarStatusCampanha(id) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { alert('Erro: ' + (d.erro || 'falha ao consultar a Meta')); return; }
   carregarCampanhas();
+}
+
+async function testarCampanha(id) {
+  const inp = document.getElementById('teste-' + id);
+  const numero = inp ? inp.value.trim() : '';
+  if (!numero) { alert('Digite um número pra teste.'); return; }
+  const r = await fetch('/painel/api/campanhas/' + id + '/teste', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ numero })
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) alert('Teste enviado pra ' + (d.numero || numero) + '. Confere o WhatsApp.');
+  else alert('Erro: ' + (d.erro || 'falha ao enviar o teste'));
+}
+
+async function dispararCampanha(id, alcance) {
+  if (!confirm('Disparar a campanha para ' + alcance + ' contatos?\\n\\nIsso ENVIA as mensagens de verdade e gera custo na Meta. Recomendo ter feito um teste antes. Confirmar?')) return;
+  const r = await fetch('/painel/api/campanhas/' + id + '/disparar', { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert('Erro: ' + (d.erro || 'falha ao disparar')); return; }
+  alert('Disparo iniciado. Acompanhe o progresso na lista (botão Atualizar).');
+  setTimeout(carregarCampanhas, 1500);
 }
 
 // ============================================================
@@ -4506,6 +4589,8 @@ def registrar_rotas(app):
                     r[c] = r[c].isoformat()
             if r.get("orcamento") is not None:
                 r["orcamento"] = float(r["orcamento"])
+            if r["template_status"] in ("enviando", "concluida"):
+                r["contadores"] = campanha_contadores(r["id"])
         return jsonify({"campanhas": rows})
 
     @app.route("/painel/api/campanhas/<int:camp_id>/status", methods=["GET"])
@@ -4525,6 +4610,48 @@ def registrar_rotas(app):
         motivo = detalhe.get("meta_status") if status == "reprovado" else None
         atualizar_status_campanha(camp_id, status, motivo)
         return jsonify({"status": status, "meta_status": detalhe.get("meta_status")})
+
+    def _campanha_do_usuario(camp_id):
+        """Carrega a campanha garantindo que é da clínica do usuário. Retorna
+        (campanha, clinica, erro_response)."""
+        camp = obter_campanha(camp_id)
+        if not camp:
+            return None, None, (jsonify({"erro": "campanha não encontrada"}), 404)
+        if session.get("clinica_id") is not None and camp["clinica_id"] != session["clinica_id"]:
+            return None, None, (jsonify({"erro": "sem permissão"}), 403)
+        return camp, obter_clinica(camp["clinica_id"]), None
+
+    @app.route("/painel/api/campanhas/<int:camp_id>/teste", methods=["POST"])
+    @login_required
+    def api_campanha_teste(camp_id):
+        """Envia a campanha pra UM número (teste), antes do disparo em massa."""
+        camp, clinica, erro = _campanha_do_usuario(camp_id)
+        if erro:
+            return erro
+        if camp["template_status"] not in ("aprovado", "enviando", "concluida"):
+            return jsonify({"erro": "o template ainda não foi aprovado"}), 400
+        numero = importacao.normalizar_telefone((request.get_json() or {}).get("numero"))
+        if not numero:
+            return jsonify({"erro": "número de teste inválido"}), 400
+        ok, det = campanhas_meta.enviar_template_campanha(
+            clinica.get("phone_number_id"), clinica.get("whatsapp_token"),
+            numero, camp["template_nome"]
+        )
+        if not ok:
+            return jsonify({"erro": det.get("erro", "falha ao enviar teste")}), 400
+        return jsonify({"ok": True, "numero": numero})
+
+    @app.route("/painel/api/campanhas/<int:camp_id>/disparar", methods=["POST"])
+    @login_required
+    def api_campanha_disparar(camp_id):
+        """Dispara a campanha em massa (em background). Gasta de verdade."""
+        camp, clinica, erro = _campanha_do_usuario(camp_id)
+        if erro:
+            return erro
+        if camp["template_status"] not in ("aprovado", "enviando"):
+            return jsonify({"erro": "só dá pra disparar campanha com template aprovado"}), 400
+        threading.Thread(target=_disparar_campanha_bg, args=(camp_id,), daemon=True).start()
+        return jsonify({"ok": True, "iniciado": True})
 
     @app.route("/painel/api/agenda/importar/preview", methods=["POST"])
     @login_required

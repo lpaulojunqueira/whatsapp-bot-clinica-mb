@@ -109,3 +109,29 @@ def consultar_status_template(waba_id, token, nome):
         return False, None, {"erro": "template não encontrado", "resposta": data}
     except Exception as e:
         return False, None, {"erro": str(e)}
+
+
+def enviar_template_campanha(phone_number_id, token, numero, template_nome, idioma="pt_BR"):
+    """
+    Envia UMA mensagem de template (já aprovado, sem variáveis) pra um número.
+    É aqui que gasta (mensagem de marketing). Retorna (ok, detalhe).
+    """
+    url = f"{GRAPH_URL}/{phone_number_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero,
+        "type": "template",
+        "template": {"name": template_nome, "language": {"code": idioma}},
+    }
+    try:
+        r = requests.post(
+            url, headers={"Authorization": f"Bearer {token}"},
+            json=payload, timeout=30
+        )
+        if r.status_code == 200:
+            return True, (r.json() if r.content else {})
+        data = r.json() if r.content else {}
+        msg = (data.get("error") or {}).get("message") or f"HTTP {r.status_code}"
+        return False, {"erro": msg}
+    except Exception as e:
+        return False, {"erro": str(e)}
